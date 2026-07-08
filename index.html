@@ -1,0 +1,2376 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+    <!-- 테마 깜빡임 방지: 최초 렌더 전 적용 -->
+    <script>
+        (function(){
+            var t = localStorage.getItem('vlm_aoi_theme') || 'dark';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>웹 기반 실시간 비전 검사 시스템</title>
+    <!-- 외부 라이브러리 로드 -->
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        /* CSS: 제조 현장용 Dark UI — 다크/라이트 듀얼 테마 */
+        :root {
+            /* ── 시맨틱 컬러 ── */
+            --bg-color:      #1e1e1e;
+            --panel-bg:      #2d2d2d;
+            --text-color:    #e0e0e0;
+            --accent-color:  #007acc;
+            --ok-color:      #4caf50;
+            --ng-color:      #f44336;
+            --border-color:  #444;
+            /* ── 레이어 컬러 ── */
+            --bg-deep:       #111111;
+            --bg-mid:        #222222;
+            --bg-mid-alt:    #252525;
+            --bg-input:      #333333;
+            --text-muted:    #888888;
+            --text-dim:      #aaaaaa;
+            --border-soft:   #555555;
+            /* ── 패널별 전용색 ── */
+            --barcode-panel-bg:  #1a2a1a;
+            --barcode-panel-bd:  #2e7d32;
+            --folder-panel-bg:   #1a1a2e;
+            --folder-panel-bd:   #3949ab;
+            --grid-overlay-bg:   #090909;
+            --registry-item-bg:  #1e1e2e;
+            --theme-icon:    '🌙';
+        }
+
+        /* ── 라이트 테마 ── */
+        [data-theme="light"] {
+            --bg-color:      #f0f2f5;
+            --panel-bg:      #ffffff;
+            --text-color:    #1a1a1a;
+            --accent-color:  #0066bb;
+            --ok-color:      #2e7d32;
+            --ng-color:      #c62828;
+            --border-color:  #d0d0d0;
+            --bg-deep:       #e4e8ee;
+            --bg-mid:        #f8f9fb;
+            --bg-mid-alt:    #eff1f5;
+            --bg-input:      #f0f0f0;
+            --text-muted:    #666666;
+            --text-dim:      #555555;
+            --border-soft:   #bbbbbb;
+            --barcode-panel-bg:  #e8f5e9;
+            --barcode-panel-bd:  #388e3c;
+            --folder-panel-bg:   #e8eaf6;
+            --folder-panel-bd:   #5c6bc0;
+            --grid-overlay-bg:   #e0e4ea;
+            --registry-item-bg:  #eef0ff;
+            --theme-icon:    '☀️';
+        }
+
+        body {
+            margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color); color: var(--text-color);
+            display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+        }
+
+        /* 상단 헤더 */
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 20px; background-color: var(--bg-deep); border-bottom: 2px solid var(--border-color);
+        }
+        .header-title { font-size: 1.5rem; font-weight: bold; color: var(--accent-color); }
+        .header-status { display: flex; gap: 20px; align-items: center; font-size: 0.9rem; }
+        .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: gray; }
+        .status-dot.active { background: var(--ok-color); box-shadow: 0 0 8px var(--ok-color); }
+
+        /* 메인 레이아웃 */
+        .container { display: flex; flex: 1; overflow: hidden; }
+        .panel { background-color: var(--panel-bg); padding: 15px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+        .left-panel { width: 300px; }
+        .center-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-deep); position: relative; }
+        .right-panel { width: 350px; }
+
+        /* 컴포넌트 스타일 */
+        h3 { margin: 0 0 10px 0; font-size: 1.1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .control-group { display: flex; flex-direction: column; gap: 8px; }
+        label { font-size: 0.85rem; color: var(--text-dim); }
+        select, input[type="text"], input[type="file"], button {
+            background: var(--bg-input); color: var(--text-color); border: 1px solid var(--border-soft); padding: 8px; border-radius: 4px; font-size: 0.9rem;
+        }
+        button { cursor: pointer; transition: background 0.2s; font-weight: bold; }
+        button:hover { background: var(--accent-color); color: #fff; }
+        button.danger:hover { background: var(--ng-color); }
+
+        /* 카메라/캔버스 영역 */
+        #video-container { position: relative; width: 100%; max-width: 800px; aspect-ratio: 4/3; }
+        video { width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
+        canvas.view-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+        
+        /* 결과 UI */
+        .result-box { text-align: center; padding: 20px; border-radius: 8px; font-size: 2rem; font-weight: bold; background: var(--bg-mid); }
+        .result-box.ok { color: var(--ok-color); border: 2px solid var(--ok-color); box-shadow: 0 0 15px rgba(76, 175, 80, 0.3); }
+        .result-box.ng { color: var(--ng-color); border: 2px solid var(--ng-color); box-shadow: 0 0 15px rgba(244, 67, 54, 0.3); animation: flash 0.5s; }
+        .result-box.search { color: #ffeb3b; border: 2px solid #ffeb3b; box-shadow: 0 0 15px rgba(255, 235, 59, 0.3); }
+
+        @keyframes flash {
+            0% { background-color: rgba(244, 67, 54, 0.5); }
+            100% { background-color: var(--bg-mid); }
+        }
+
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+        .stat-item { background: var(--bg-input); padding: 10px; border-radius: 4px; text-align: center; }
+        .stat-value { font-size: 1.2rem; font-weight: bold; margin-top: 5px; color: var(--accent-color); }
+
+        #master-img-preview { width: 100%; height: 150px; background: var(--bg-deep); object-fit: contain; border: 1px dashed var(--border-soft); }
+        .chart-container { width: 100%; height: 200px; margin-top: 10px; }
+        
+        #loading-overlay {
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center;
+            font-size: 1.5rem; color: white; z-index: 1000; flex-direction: column; gap: 10px;
+        }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid var(--accent-color); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* 바코드 입력 정보창 */
+        .barcode-panel {
+            background: var(--barcode-panel-bg); border: 1px solid var(--barcode-panel-bd); border-radius: 6px; padding: 10px;
+        }
+        .barcode-input-wrap { display: flex; gap: 6px; align-items: center; }
+        #barcode-input {
+            flex: 1; background: var(--bg-deep); color: #00e676; border: 1px solid var(--barcode-panel-bd);
+            padding: 8px; border-radius: 4px; font-size: 1rem; font-family: monospace; letter-spacing: 1px;
+        }
+        #barcode-input:focus { outline: none; border-color: #00e676; box-shadow: 0 0 6px rgba(0,230,118,0.4); }
+        .barcode-info-row { display: flex; justify-content: space-between; font-size: 0.78rem; margin-top: 6px; color: var(--text-muted); }
+        .barcode-extracted { color: #ffeb3b; font-weight: bold; font-family: monospace; font-size: 0.9rem; }
+
+        /* 폴더 지정 패널 */
+        .folder-panel {
+            background: var(--folder-panel-bg); border: 1px solid var(--folder-panel-bd); border-radius: 6px; padding: 10px;
+        }
+        .folder-status {
+            font-size: 0.78rem; margin-top: 6px; padding: 6px 8px; background: var(--bg-deep);
+            border-radius: 4px; border: 1px solid var(--border-color); color: var(--text-muted); word-break: break-all;
+            min-height: 28px; line-height: 1.4;
+        }
+        .folder-registry-count {
+            font-size: 0.78rem; color: #7986cb; margin-top: 4px; text-align: right;
+        }
+        #btn-folder-pick {
+            background: var(--folder-panel-bd); border-color: #5c6bc0;
+        }
+        #btn-folder-pick:hover { background: #5c6bc0; color: #fff; }
+        #folder-file-input { display: none; }
+
+        /* 등록 양품 목록 */
+        .registry-list {
+            max-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+            margin-top: 4px;
+        }
+        .registry-item {
+            display: flex; align-items: center; gap: 6px;
+            background: var(--registry-item-bg); border: 1px solid var(--folder-panel-bd); border-radius: 4px;
+            padding: 5px 8px; font-size: 0.78rem;
+        }
+        .registry-item img {
+            width: 36px; height: 28px; object-fit: contain; background: var(--bg-deep);
+            border: 1px solid var(--border-color); border-radius: 2px; flex-shrink: 0;
+        }
+        .registry-item-name {
+            flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-color);
+        }
+        .registry-item-del {
+            background: var(--ng-color); border: none; color: #fff; border-radius: 3px;
+            padding: 2px 7px; cursor: pointer; font-size: 0.75rem; flex-shrink: 0; opacity: 0.85;
+        }
+        .registry-item-del:hover { opacity: 1; }
+
+        /* 양품 저장 / OK 바코드 모달 공통 */
+        .custom-modal {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.75); z-index: 2000; justify-content: center; align-items: center;
+        }
+        .custom-modal.show { display: flex; }
+        .modal-box {
+            background: var(--panel-bg); border: 1px solid var(--accent-color); border-radius: 10px;
+            padding: 24px; width: 380px; display: flex; flex-direction: column; gap: 14px;
+        }
+        .modal-box h3 { margin: 0; color: var(--accent-color); }
+        .modal-box label { font-size: 0.85rem; color: var(--text-dim); }
+        .modal-box input[type="text"] { width: 100%; box-sizing: border-box; font-size: 1rem; padding: 10px; }
+        .modal-actions { display: flex; gap: 10px; }
+        .modal-actions button { flex: 1; padding: 10px; font-size: 0.95rem; }
+        .btn-confirm { background: var(--ok-color) !important; color: #fff !important; }
+        .btn-cancel { background: var(--border-soft) !important; }
+        .modal-preview { width: 100%; height: 120px; object-fit: contain; background: var(--bg-deep); border: 1px dashed var(--border-soft); border-radius: 4px; }
+
+        /* ── P01: 다중 카메라 채널 탭 ── */
+        .channel-tabs {
+            display: flex; gap: 4px; padding: 6px 12px;
+            background: var(--bg-deep); border-bottom: 2px solid var(--border-color);
+            align-items: center; flex-wrap: wrap;
+        }
+        .channel-tab {
+            display: flex; align-items: center; gap: 6px;
+            padding: 5px 14px; border: 1px solid var(--border-color);
+            border-radius: 6px 6px 0 0; background: var(--bg-mid-alt);
+            color: var(--text-muted); cursor: pointer; font-size: 0.82rem;
+            transition: all 0.15s; user-select: none;
+        }
+        .channel-tab:hover { background: var(--bg-input); color: var(--text-color); }
+        .channel-tab.active { background: var(--accent-color); color: #fff; border-color: var(--accent-color); }
+        .ch-dot { width: 8px; height: 8px; border-radius: 50%; background: #444; flex-shrink: 0; }
+        .channel-tab.cam-on .ch-dot { background: #4caf50; }
+        .channel-tab.inspecting .ch-dot { background: #ff9800; animation: chpulse 1s ease-in-out infinite; }
+        @keyframes chpulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+        .ch-badge {
+            font-size: 0.65rem; font-weight: bold; padding: 1px 5px;
+            border-radius: 3px; line-height: 1.4;
+        }
+        .ch-badge.ok { background: #1b5e20; color: #66bb6a; }
+        .ch-badge.ng { background: #b71c1c; color: #ef9a9a; }
+        .ch-name-input {
+            background: transparent; border: none; color: inherit;
+            font-size: 0.82rem; width: 52px; text-align: center; cursor: text;
+        }
+        .ch-name-input:focus { outline: 1px solid rgba(255,255,255,0.4); border-radius: 2px; background: rgba(255,255,255,0.08); }
+        .btn-grid-view {
+            margin-left: auto; background: #3949ab; border: 1px solid #5c6bc0;
+            color: #fff; padding: 5px 12px; border-radius: 4px; cursor: pointer;
+            font-size: 0.82rem; white-space: nowrap;
+        }
+        .btn-grid-view:hover { background: #5c6bc0; }
+
+        /* ── P01: 그리드 오버레이 ── */
+        .grid-overlay {
+            display: none; position: fixed; inset: 0;
+            background: var(--grid-overlay-bg); z-index: 800; flex-direction: column;
+        }
+        .grid-overlay.show { display: flex; }
+        .grid-hdr {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 16px; background: var(--bg-deep); border-bottom: 1px solid var(--border-color); flex-shrink: 0;
+        }
+        .grid-hdr-title { font-size: 1rem; font-weight: bold; color: var(--accent-color); }
+        .grid-body {
+            flex: 1; display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 3px; padding: 3px; overflow: hidden;
+        }
+        .grid-cell {
+            position: relative; background: var(--bg-deep);
+            border: 2px solid var(--border-color); border-radius: 4px;
+            overflow: hidden; cursor: pointer; transition: border-color 0.2s;
+        }
+        .grid-cell:hover { border-color: var(--border-soft); }
+        .grid-cell.active-ch  { border-color: var(--accent-color); }
+        .grid-cell.result-ok  { border-color: var(--ok-color); box-shadow: inset 0 0 12px rgba(76,175,80,0.15); }
+        .grid-cell.result-ng  { border-color: var(--ng-color); box-shadow: inset 0 0 12px rgba(244,67,54,0.15); animation: ngcell 0.4s; }
+        @keyframes ngcell { 0%{box-shadow:inset 0 0 40px rgba(244,67,54,0.5)} 100%{box-shadow:inset 0 0 12px rgba(244,67,54,0.15)} }
+        .grid-canvas { width:100%; height:100%; display:block; object-fit:contain; }
+        .grid-cell-top {
+            position: absolute; top: 0; left: 0; right: 0;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 4px 8px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.75), transparent);
+            pointer-events: none;
+        }
+        .grid-cell-name { font-size: 0.78rem; font-weight: bold; color: #fff; }
+        .grid-cell-result { font-size: 0.78rem; font-weight: bold; padding: 1px 6px; border-radius: 3px; }
+        .grid-cell-result.ok { background: rgba(27,94,32,0.85); color: #66bb6a; }
+        .grid-cell-result.ng { background: rgba(183,28,28,0.85); color: #ef9a9a; }
+        .grid-cell-result.wait { background: rgba(50,50,50,0.85); color: #888; }
+        .grid-cell-bottom {
+            position: absolute; bottom: 0; left: 0; right: 0;
+            display: flex; justify-content: space-around; align-items: center;
+            padding: 3px 8px; font-size: 0.7rem; color: #bbb;
+            background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+            pointer-events: none;
+        }
+        .grid-cell-no-cam {
+            display: flex; align-items: center; justify-content: center;
+            height: 100%; color: #444; font-size: 0.9rem;
+        }
+        /* ch 캔버스들 */
+        .ch-canvas { position: absolute; top:0; left:0; width:100%; height:100%; cursor:crosshair; }
+
+        /* ── P02: 테마 토글 버튼 ── */
+        #btn-theme-toggle {
+            background: transparent; border: 1px solid var(--border-soft);
+            color: var(--text-color); padding: 4px 10px; border-radius: 20px;
+            font-size: 1rem; cursor: pointer; transition: all 0.2s;
+            display: flex; align-items: center; gap: 5px;
+            white-space: nowrap;
+        }
+        #btn-theme-toggle:hover { background: var(--bg-input); border-color: var(--accent-color); }
+
+        /* 라이트 모드 보정 — 검정 글자가 필요한 요소 */
+        [data-theme="light"] select,
+        [data-theme="light"] input[type="text"],
+        [data-theme="light"] input[type="range"] {
+            color: var(--text-color);
+            background: var(--bg-input);
+            border-color: var(--border-color);
+        }
+        [data-theme="light"] .ch-name-input { color: var(--text-color); }
+        [data-theme="light"] video { background: #888; }
+        [data-theme="light"] .panel { box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body>
+
+    <!-- 로딩 오버레이 -->
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div id="loading-text">OpenCV.js 및 라이브러리 로드 중...</div>
+    </div>
+
+    <!-- ── P01: 그리드 오버레이 ── -->
+    <div id="grid-overlay" class="grid-overlay">
+        <div class="grid-hdr">
+            <span class="grid-hdr-title">⊞ 다중 카메라 그리드 뷰</span>
+            <div style="display:flex;gap:8px;align-items:center;font-size:0.8rem;color:#888;">
+                <span id="grid-agg-stats">전체 OK: 0 / NG: 0</span>
+                <button onclick="closeGridView()" style="background:var(--bg-input);border:1px solid var(--border-soft);color:var(--text-color);padding:5px 12px;border-radius:4px;cursor:pointer;">✕ 닫기 (G)</button>
+            </div>
+        </div>
+        <div class="grid-body" id="grid-body">
+            <!-- CH0 -->
+            <div class="grid-cell active-ch" id="grid-cell-0" onclick="gridCellClick(0)">
+                <canvas id="grid-canvas-0" class="grid-canvas"></canvas>
+                <div class="grid-cell-top">
+                    <span class="grid-cell-name" id="grid-name-0">CH1</span>
+                    <span class="grid-cell-result wait" id="grid-result-0">WAIT</span>
+                </div>
+                <div class="grid-cell-bottom" id="grid-stats-0">
+                    <span>OK: 0</span><span>NG: 0</span><span>유사도: -</span>
+                </div>
+            </div>
+            <!-- CH1 -->
+            <div class="grid-cell" id="grid-cell-1" onclick="gridCellClick(1)">
+                <canvas id="grid-canvas-1" class="grid-canvas"></canvas>
+                <div class="grid-cell-top">
+                    <span class="grid-cell-name" id="grid-name-1">CH2</span>
+                    <span class="grid-cell-result wait" id="grid-result-1">WAIT</span>
+                </div>
+                <div class="grid-cell-bottom" id="grid-stats-1">
+                    <span>OK: 0</span><span>NG: 0</span><span>유사도: -</span>
+                </div>
+            </div>
+            <!-- CH2 -->
+            <div class="grid-cell" id="grid-cell-2" onclick="gridCellClick(2)">
+                <canvas id="grid-canvas-2" class="grid-canvas"></canvas>
+                <div class="grid-cell-top">
+                    <span class="grid-cell-name" id="grid-name-2">CH3</span>
+                    <span class="grid-cell-result wait" id="grid-result-2">WAIT</span>
+                </div>
+                <div class="grid-cell-bottom" id="grid-stats-2">
+                    <span>OK: 0</span><span>NG: 0</span><span>유사도: -</span>
+                </div>
+            </div>
+            <!-- CH3 -->
+            <div class="grid-cell" id="grid-cell-3" onclick="gridCellClick(3)">
+                <canvas id="grid-canvas-3" class="grid-canvas"></canvas>
+                <div class="grid-cell-top">
+                    <span class="grid-cell-name" id="grid-name-3">CH4</span>
+                    <span class="grid-cell-result wait" id="grid-result-3">WAIT</span>
+                </div>
+                <div class="grid-cell-bottom" id="grid-stats-3">
+                    <span>OK: 0</span><span>NG: 0</span><span>유사도: -</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 상단 헤더 -->
+    <header>
+        <div class="header-title">AI Vision Inspection System</div>
+        <div class="header-status">
+            <div><span id="time-display">00:00:00</span></div>
+            <div>FPS: <span id="fps-display">0</span></div>
+            <div>OpenCV <span id="cv-status" class="status-dot"></span></div>
+            <div>Camera <span id="cam-status" class="status-dot"></span></div>
+            <button id="btn-theme-toggle" onclick="toggleTheme()" title="라이트/다크 모드 전환">🌙 다크</button>
+        </div>
+    </header>
+
+    <!-- ── P01: 채널 탭 바 ── -->
+    <div class="channel-tabs" id="channel-tabs">
+        <div class="channel-tab active" id="ch-tab-0" onclick="switchChannel(0)">
+            <span class="ch-dot"></span>
+            <input class="ch-name-input" id="ch-name-0" value="CH1"
+                onclick="event.stopPropagation()"
+                onchange="channels[0].name=this.value; updateChannelTab(channels[0]);">
+            <span class="ch-badge" id="ch-badge-0"></span>
+        </div>
+        <div class="channel-tab" id="ch-tab-1" onclick="switchChannel(1)">
+            <span class="ch-dot"></span>
+            <input class="ch-name-input" id="ch-name-1" value="CH2"
+                onclick="event.stopPropagation()"
+                onchange="channels[1].name=this.value; updateChannelTab(channels[1]);">
+            <span class="ch-badge" id="ch-badge-1"></span>
+        </div>
+        <div class="channel-tab" id="ch-tab-2" onclick="switchChannel(2)">
+            <span class="ch-dot"></span>
+            <input class="ch-name-input" id="ch-name-2" value="CH3"
+                onclick="event.stopPropagation()"
+                onchange="channels[2].name=this.value; updateChannelTab(channels[2]);">
+            <span class="ch-badge" id="ch-badge-2"></span>
+        </div>
+        <div class="channel-tab" id="ch-tab-3" onclick="switchChannel(3)">
+            <span class="ch-dot"></span>
+            <input class="ch-name-input" id="ch-name-3" value="CH4"
+                onclick="event.stopPropagation()"
+                onchange="channels[3].name=this.value; updateChannelTab(channels[3]);">
+            <span class="ch-badge" id="ch-badge-3"></span>
+        </div>
+        <button class="btn-grid-view" onclick="openGridView()">⊞ 그리드 뷰 (G)</button>
+    </div>
+
+    <!-- 메인 컨텐츠 -->
+    <div class="container">
+        <!-- 좌측: 설정 및 ROI -->
+        <div class="panel left-panel">
+            <h3>카메라 설정</h3>
+            <div class="control-group">
+                <label>카메라 선택</label>
+                <select id="camera-select"></select>
+                <button id="btn-start-cam">카메라 연결</button>
+                <label style="display:flex; align-items:center; gap:5px; color:white; font-size:0.85rem; cursor:pointer; margin-top:5px;">
+                    <input type="checkbox" id="chk-flip-h" style="width:16px; height:16px;"> 화면 좌우 반전
+                </label>
+                <label style="display:flex; align-items:center; gap:5px; color:white; font-size:0.85rem; cursor:pointer;">
+                    카메라 회전:
+                    <select id="camera-angle" style="flex:1; background:var(--bg-mid); color:var(--text-color); border:1px solid var(--border-soft); padding:4px;">
+                        <option value="0">0° (기본)</option>
+                        <option value="90">90°</option>
+                        <option value="180">180°</option>
+                        <option value="270">270°</option>
+                    </select>
+                </label>
+            </div>
+
+            <h3>기준 양품(Master) 설정</h3>
+            <div class="control-group">
+                <input type="file" id="master-upload" accept="image/*">
+                <img id="master-img-preview" alt="양품 이미지 없음">
+                <button id="btn-set-master">현재 화면을 양품으로 등록</button>
+            </div>
+
+            <h3>바코드 리더기</h3>
+            <div class="barcode-panel control-group">
+                <label>모델 입력 (5~14번째 자리 자동 추출)</label>
+                <div class="barcode-input-wrap">
+                    <input type="text" id="barcode-input" placeholder="바코드를 스캔하세요..." autocomplete="off">
+                </div>
+                <div class="barcode-info-row">
+                    <span>추출 코드: <span id="barcode-extracted" class="barcode-extracted">-</span></span>
+                    <span id="barcode-match-status" style="color:#888;">대기중</span>
+                </div>
+                <div id="barcode-fullval" style="font-size:0.75rem;color:#666;margin-top:2px;word-break:break-all;">전체값: -</div>
+            </div>
+
+            <h3>양품 폴더 지정</h3>
+            <div class="folder-panel control-group">
+                <label>양품 이미지 폴더를 선택하면 바코드 코드로 자동 매칭됩니다</label>
+                <input type="file" id="folder-file-input" accept="image/*" multiple webkitdirectory>
+                <button id="btn-folder-pick">📂 양품 폴더 선택</button>
+                <div class="folder-status" id="folder-status">폴더가 지정되지 않았습니다.</div>
+                <div class="folder-registry-count" id="folder-registry-count">등록된 양품: 0 개</div>
+                <div class="registry-list" id="registry-list"></div>
+            </div>
+
+            <h3>OK 이미지 저장 폴더</h3>
+            <div class="folder-panel control-group">
+                <label>OK 판정 시 이미지가 자동 저장될 폴더를 지정합니다</label>
+                <input type="file" id="ok-folder-file-input" style="display:none" webkitdirectory>
+                <button id="btn-ok-folder-pick">📂 저장 폴더 선택</button>
+                <div class="folder-status" id="ok-folder-status" style="color:#888;">폴더가 지정되지 않았습니다.<br><span style="font-size:0.72rem;color:#666;">※ 미지정 시 브라우저 기본 다운로드 폴더에 저장됩니다.</span></div>
+            </div>
+
+            <h3>검사 조건 설정</h3>
+            <div class="control-group">
+                <label>형상/표면 유사도 합격 기준 (%)</label>
+                <input type="range" id="threshold-sim" min="50" max="100" value="95" oninput="document.getElementById('sim-val').innerText = this.value + '%'; saveSettings();">
+                <span id="sim-val" style="text-align:right; font-size: 0.9rem;">95%</span>
+                
+                <!-- 딥러닝 AI 검사 조건 -->
+                <label style="display:flex; align-items:center; gap:5px; color:#a5b4fc; font-size:0.85rem; cursor:pointer; margin-top:10px;">
+                    <input type="checkbox" id="chk-dl-enable" style="width:16px; height:16px;" onchange="saveSettings();"> 딥러닝(AI) 교차 판정 활성화
+                </label>
+                <div id="dl-status" style="font-size:0.75rem; color:#888; text-align:right; margin-top:-5px;">(모델 로드 대기중...)</div>
+                <label>AI 특징 유사도 합격 기준 (%)</label>
+                <input type="range" id="threshold-dl-sim" min="50" max="100" value="90" oninput="document.getElementById('dl-sim-val').innerText = this.value + '%'; saveSettings();">
+                <span id="dl-sim-val" style="text-align:right; font-size: 0.9rem; color:#a5b4fc;">90%</span>
+
+                <label style="margin-top:10px;">이진화(Threshold) 값</label>
+                <input type="range" id="threshold-bin" min="0" max="255" value="50" oninput="saveSettings();">
+            </div>
+
+            <h3>ROI 설정</h3>
+            <div class="control-group">
+                <button id="btn-draw-rect-roi">사각형 ROI 그리기</button>
+                <button id="btn-draw-auto-roi" style="background: #9c27b0;">자석 윤곽선 ROI 그리기</button>
+                <button id="btn-reset-roi" class="danger">ROI 초기화</button>
+                <div style="font-size: 0.8rem; color: #888;">화면을 드래그하여 검사 영역을 지정하세요.</div>
+            </div>
+            
+            <button id="btn-inspect-mode" style="background: var(--ok-color); margin-top: auto; padding: 15px;">검사 시작 (연속 모드)</button>
+        </div>
+
+        <!-- 중앙: 실시간 영상 및 오버레이 -->
+        <div class="panel center-panel">
+            <!-- ── P01: 채널별 video + canvas (CH0이 기본 활성) ── -->
+            <div id="video-container">
+                <!-- 채널 video 요소 (모두 hidden, 각 채널 루프에서 사용) -->
+                <video id="video-ch0" autoplay playsinline muted style="display:none;"></video>
+                <video id="video-ch1" autoplay playsinline muted style="display:none;"></video>
+                <video id="video-ch2" autoplay playsinline muted style="display:none;"></video>
+                <video id="video-ch3" autoplay playsinline muted style="display:none;"></video>
+                <!-- 채널 캔버스: 활성 채널만 표시 -->
+                <canvas id="canvas-ch0" class="ch-canvas" style="display:block;"></canvas>
+                <canvas id="canvas-ch1" class="ch-canvas" style="display:none;"></canvas>
+                <canvas id="canvas-ch2" class="ch-canvas" style="display:none;"></canvas>
+                <canvas id="canvas-ch3" class="ch-canvas" style="display:none;"></canvas>
+            </div>
+        </div>
+
+        <!-- 우측: 결과 및 통계 -->
+        <div class="panel right-panel">
+            <h3>검사 결과 판정</h3>
+            <div id="result-display" class="result-box">WAIT</div>
+            
+            <div class="stats-grid">
+                <div class="stat-item">유사도(CV)<div id="val-sim" class="stat-value">0%</div></div>
+                <div class="stat-item" style="border:1px solid #3949ab;">유사도(AI)<div id="val-dl-sim" class="stat-value" style="color:#a5b4fc;">-</div></div>
+                <div class="stat-item">처리속도<div id="val-time" class="stat-value">0ms</div></div>
+                <div class="stat-item">검사수량<div id="val-total" class="stat-value">0</div></div>
+                <div class="stat-item" style="color:var(--ok-color)">OK 수량<div id="val-ok" class="stat-value">0</div></div>
+                <div class="stat-item" style="color:var(--ng-color)">NG 수량<div id="val-ng" class="stat-value">0</div></div>
+                <div class="stat-item" style="grid-column: span 2;">양품률<div id="val-rate" class="stat-value">0%</div></div>
+            </div>
+
+            <h3>검사 통계 그래프</h3>
+            <div class="chart-container">
+                <canvas id="stats-chart"></canvas>
+            </div>
+
+            <h3 style="margin-top:10px;">로그 관리</h3>
+            <div class="control-group">
+                <button id="btn-reset-stats" class="danger">🗑️ 기록 초기화</button>
+                <button id="btn-export-csv">검사 이력 XLSX 다운로드</button>
+                <button id="btn-save-settings">현재 설정 JSON 저장</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 양품 저장 모달 -->
+    <div id="save-master-modal" class="custom-modal">
+        <div class="modal-box">
+            <h3>📁 양품 이미지 저장</h3>
+            <img id="modal-preview-img" class="modal-preview" alt="저장할 양품 이미지">
+            <div id="modal-folder-hint" style="font-size:0.8rem; padding:6px 8px; background:#1a1a2e; border:1px solid #3949ab; border-radius:4px; color:#7986cb; display:none;">
+                💡 저장 후 양품 폴더에 복사하면 바코드 자동 매칭됩니다.
+            </div>
+            <div>
+                <label>저장 파일명 (확장자 제외)</label>
+                <input type="text" id="master-save-filename" placeholder="예: part_A_front_001" autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-confirm" id="btn-modal-save">💾 PNG로 저장</button>
+                <button class="btn-cancel" id="btn-modal-cancel">취소</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- OK 바코드 입력 모달 -->
+    <div id="ok-barcode-modal" class="custom-modal">
+        <div class="modal-box">
+            <h3 style="color: var(--ok-color);">✅ OK 판정 - 자동 저장 완료</h3>
+            <div style="font-size: 0.85rem; color: #ccc; margin-bottom: 5px;">
+                양품으로 판정되어 이미지가 저장되었습니다.<br>
+                <b>다음 제품의 바코드</b>를 스캔해주세요.<br>
+                <span style="font-size: 0.75rem; color: #888;">(스캔이 감지되면 자동으로 다음 검사가 시작됩니다.)</span>
+            </div>
+            <div>
+                <input type="text" id="ok-barcode-input" placeholder="바코드 스캔 대기 중..." autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-confirm" id="btn-ok-barcode-save">확인 및 시작</button>
+                <button class="btn-cancel" id="btn-ok-barcode-cancel">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ── P01: 다중 채널 상태 관리 ──────────────────────────────────
+        const MAX_CH = 4;
+        let activeChannelId = 0;
+        let channels = [];           // createChannel()로 초기화
+        let gridAnimId = null;       // 그리드 뷰 rAF ID
+        let isGridOpen = false;
+
+        // 공유 딥러닝 모델 (채널 공통)
+        let globalDlModel = null;
+        let globalIsDlReady = false;
+
+        // 호환성: 기존 코드에서 state/video/outCanvas/ctx를 참조하는 곳을 위한 프록시
+        // → 모든 함수가 ch 파라미터를 받도록 전환 후 불필요해짐
+        function ach() { return channels[activeChannelId]; }
+
+        function createChannel(id) {
+            const video  = document.getElementById(`video-ch${id}`);
+            const canvas = document.getElementById(`canvas-ch${id}`);
+            const ctx    = canvas.getContext('2d', { willReadFrequently: true });
+            return {
+                id, name: `CH${id+1}`,
+                deviceId: '',
+                video, canvas, ctx,
+                animationId: null,
+                isCameraOn: false,
+                isInspecting: false,
+                isDrawingMode: null,
+                isDrawingROI: false,
+                roiDrawingType: 'rect',
+                dragStart: null, mouseX: 0, mouseY: 0,
+                masterMat: null, masterMats: [],
+                roi: { x:0, y:0, w:0, h:0 },
+                roiMode: 'rect', roiMask: null, roiContours: [],
+                stableFrames: 0, continuousOkFrames: 0,
+                lastMatchX: -1, lastMatchY: -1,
+                isFrozen: false,
+                trackingPoint: { x:0, y:0, found:false },
+                cameraAngle: 0, flipH: false,
+                inspectionResultLogged: false,
+                currentResultIsOK: false,
+                ignoreOkUntilRemoved: false,
+                waitingForResult: false,
+                currentBarcodeFull: null, currentBarcodeCode: null, currentSerialBarcode: null,
+                capturedOkBlob: null,
+                okSaveDirHandle: null, okSaveFolderName: null,
+                masterSaveDirHandle: null,
+                masterFileRegistry: {}, masterImageDataURL: null, selectedFolderName: null,
+                stats: { total:0, ok:0, ng:0, history:[] },
+                lastFrameTime: 0, fps: 0,
+                inspectThrottle: 0, lastInspectedSimilarity: -1, lastIsOK: null,
+                barcodeDebounceTimer: null
+            };
+        }
+
+        // 채널 전환: 탭 UI + 캔버스 표시 교체 + 설정 패널 동기화
+        function switchChannel(id) {
+            if (id === activeChannelId && channels.length > 0) {
+                // 이미 같은 채널 — 탭만 갱신
+                document.querySelectorAll('.channel-tab').forEach((t, i) => t.classList.toggle('active', i === id));
+                return;
+            }
+            // 기존 캔버스 숨김
+            if (channels.length > 0) {
+                channels[activeChannelId].canvas.style.display = 'none';
+                unbindCanvasEvents(channels[activeChannelId]);
+            }
+            activeChannelId = id;
+            const ch = channels[id];
+            ch.canvas.style.display = 'block';
+            bindCanvasEvents(ch);
+
+            // 탭 스타일
+            document.querySelectorAll('.channel-tab').forEach((t, i) => t.classList.toggle('active', i === id));
+
+            // 설정 패널 → 현재 채널 값으로 갱신
+            document.getElementById('camera-select').value = ch.deviceId || '';
+            document.getElementById('chk-flip-h').checked  = ch.flipH;
+            document.getElementById('camera-angle').value  = ch.cameraAngle;
+            document.getElementById('master-img-preview').src = ch.masterImageDataURL || '';
+            const folderStatus = document.getElementById('folder-status');
+            folderStatus.innerHTML = ch.selectedFolderName
+                ? `<span style="color:#7986cb">📁 ${ch.selectedFolderName}</span>`
+                : '폴더가 지정되지 않았습니다.';
+            renderRegistryList(ch);
+
+            // 카메라/검사 버튼 상태
+            const btnCam = document.getElementById('btn-start-cam');
+            btnCam.innerText = ch.isCameraOn ? '카메라 재연결' : '카메라 연결';
+            const btnInsp = document.getElementById('btn-inspect-mode');
+            if (ch.isInspecting) {
+                btnInsp.innerText = '검사 중지'; btnInsp.style.background = 'var(--ng-color)';
+            } else {
+                btnInsp.innerText = '검사 시작 (연속 모드)'; btnInsp.style.background = 'var(--ok-color)';
+            }
+
+            // 결과 박스
+            const box = document.getElementById('result-display');
+            if (!ch.isCameraOn) { box.className='result-box'; box.innerText='WAIT'; }
+
+            // 통계
+            updateStatsUI(ch);
+
+            // 차트 갱신
+            if (chartInstance) {
+                chartInstance.data.labels = [];
+                chartInstance.data.datasets[0].data = [];
+                chartInstance.update();
+            }
+        }
+
+        // 채널 탭 상태 배지 업데이트
+        function updateChannelTab(ch) {
+            const tab  = document.getElementById(`ch-tab-${ch.id}`);
+            const badge = document.getElementById(`ch-badge-${ch.id}`);
+            const nameEl = document.getElementById(`ch-name-${ch.id}`);
+            if (nameEl) nameEl.value = ch.name;
+
+            tab.classList.toggle('cam-on',     ch.isCameraOn && !ch.isInspecting);
+            tab.classList.toggle('inspecting', ch.isInspecting);
+
+            if (!ch.isCameraOn) { badge.className='ch-badge'; badge.innerText=''; return; }
+            const box = document.getElementById('result-display');
+            if (ch.id === activeChannelId) {
+                // 활성 채널은 result-display 그대로 반영
+                if (box.classList.contains('ok'))   { badge.className='ch-badge ok'; badge.innerText='OK'; }
+                else if (box.classList.contains('ng')) { badge.className='ch-badge ng'; badge.innerText='NG'; }
+                else { badge.className='ch-badge'; badge.innerText=''; }
+            }
+        }
+
+        // 그리드 뷰 열기/닫기
+        function openGridView() {
+            document.getElementById('grid-overlay').classList.add('show');
+            isGridOpen = true;
+            // grid-canvas 크기를 셀에 맞게 설정 후 루프 시작
+            for (let i = 0; i < MAX_CH; i++) {
+                const gc = document.getElementById(`grid-canvas-${i}`);
+                const cell = document.getElementById(`grid-cell-${i}`);
+                gc.width  = cell.offsetWidth  || 320;
+                gc.height = cell.offsetHeight || 240;
+            }
+            renderGridView();
+        }
+        function closeGridView() {
+            document.getElementById('grid-overlay').classList.remove('show');
+            isGridOpen = false;
+            if (gridAnimId) { cancelAnimationFrame(gridAnimId); gridAnimId = null; }
+        }
+        function gridCellClick(id) {
+            closeGridView();
+            switchChannel(id);
+        }
+        function renderGridView() {
+            if (!isGridOpen) return;
+            let aggOk = 0, aggNg = 0;
+            for (let i = 0; i < MAX_CH; i++) {
+                const ch  = channels[i];
+                const gc  = document.getElementById(`grid-canvas-${i}`);
+                const gctx = gc.getContext('2d');
+                const cell = document.getElementById(`grid-cell-${i}`);
+
+                // 셀 border 클래스
+                cell.classList.toggle('active-ch', i === activeChannelId);
+
+                if (!ch || !ch.isCameraOn) {
+                    gctx.fillStyle = '#111';
+                    gctx.fillRect(0, 0, gc.width, gc.height);
+                    gctx.fillStyle = '#333';
+                    gctx.font = '13px sans-serif';
+                    gctx.textAlign = 'center';
+                    gctx.fillText(`${ch ? ch.name : 'CH'+(i+1)} — 미연결`, gc.width/2, gc.height/2);
+                    document.getElementById(`grid-result-${i}`).className = 'grid-cell-result wait';
+                    document.getElementById(`grid-result-${i}`).innerText = 'WAIT';
+                    document.getElementById(`grid-stats-${i}`).innerHTML = '<span>OK: 0</span><span>NG: 0</span><span>유사도: -</span>';
+                    continue;
+                }
+
+                // 채널 캔버스 → 그리드 셀에 복사
+                gctx.drawImage(ch.canvas, 0, 0, gc.width, gc.height);
+
+                // 결과 업데이트
+                const resultEl = document.getElementById(`grid-result-${i}`);
+                if (ch.isInspecting) {
+                    const lastOk = ch.lastIsOK;
+                    if (lastOk === true)       { resultEl.className='grid-cell-result ok'; resultEl.innerText='OK'; cell.classList.add('result-ok'); cell.classList.remove('result-ng'); }
+                    else if (lastOk === false) { resultEl.className='grid-cell-result ng'; resultEl.innerText='NG'; cell.classList.add('result-ng'); cell.classList.remove('result-ok'); }
+                    else                       { resultEl.className='grid-cell-result wait'; resultEl.innerText='검사중'; cell.classList.remove('result-ok','result-ng'); }
+                } else {
+                    resultEl.className='grid-cell-result wait'; resultEl.innerText='대기';
+                    cell.classList.remove('result-ok','result-ng');
+                }
+
+                // 채널 통계
+                document.getElementById(`grid-stats-${i}`).innerHTML =
+                    `<span>OK: ${ch.stats.ok}</span><span>NG: ${ch.stats.ng}</span><span>유사도: ${ch.lastInspectedSimilarity>=0?ch.lastInspectedSimilarity.toFixed(1)+'%':'-'}</span>`;
+                aggOk += ch.stats.ok;
+                aggNg += ch.stats.ng;
+            }
+            document.getElementById('grid-agg-stats').innerText = `전체 OK: ${aggOk} / NG: ${aggNg}`;
+            gridAnimId = requestAnimationFrame(renderGridView);
+        }
+
+        let chartInstance = null;
+
+        function onOpenCvReady() {
+            cv['onRuntimeInitialized'] = () => {
+                document.getElementById('cv-status').classList.add('active');
+                document.getElementById('loading-overlay').style.display = 'none';
+                initSystem();
+            };
+        }
+
+        async function initSystem() {
+            // ── P01: 채널 초기화
+            for (let i = 0; i < MAX_CH; i++) channels.push(createChannel(i));
+            bindCanvasEvents(channels[0]);  // 기본 활성 채널 이벤트 바인딩
+
+            updateTime();
+            setInterval(updateTime, 1000);
+            await getCameras();
+            initChart();
+            setupEventListeners();
+            loadSettings();
+
+            // 공유 딥러닝 모델 로드
+            if (typeof mobilenet !== 'undefined') {
+                mobilenet.load({ version: 2, alpha: 1.0 }).then(model => {
+                    globalDlModel = model;
+                    globalIsDlReady = true;
+                    const el = document.getElementById('dl-status');
+                    if (el) { el.innerText = '(모델 로드 완료)'; el.style.color = '#00e676'; }
+                }).catch(err => {
+                    console.error('TFJS Model load error:', err);
+                    const el = document.getElementById('dl-status');
+                    if (el) { el.innerText = '(로드 실패)'; el.style.color = '#f44336'; }
+                });
+            }
+
+            // G 키 단축키 — 그리드 뷰 토글
+            document.addEventListener('keydown', e => {
+                if (e.key === 'g' || e.key === 'G') {
+                    if (document.getElementById('save-master-modal').classList.contains('show')) return;
+                    if (document.getElementById('ok-barcode-modal').classList.contains('show')) return;
+                    const active = document.activeElement;
+                    if (active && (active.tagName==='INPUT'||active.tagName==='TEXTAREA')) return;
+                    isGridOpen ? closeGridView() : openGridView();
+                }
+            });
+        }
+
+        async function getCameras() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(d => d.kind === 'videoinput');
+                const select = document.getElementById('camera-select');
+                select.innerHTML = '';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${index + 1}`;
+                    select.appendChild(option);
+                });
+            } catch (err) {
+                console.error('카메라를 찾을 수 없습니다.', err);
+            }
+        }
+        
+        // ── P01: DL 임베딩은 공유 모델 사용 (채널 무관)
+        function computeDLEmbedding(canvas) {
+            if (!globalIsDlReady || !globalDlModel) return null;
+            try {
+                const tensor = tf.browser.fromPixels(canvas);
+                const embedding = globalDlModel.infer(tensor, true);
+                const arr = Array.from(embedding.dataSync());
+                tensor.dispose(); embedding.dispose();
+                return arr;
+            } catch(e) {
+                console.warn('DL Embedding failed', e);
+                return null;
+            }
+        }
+
+        function cosineSimilarity(a, b) {
+            if (!a || !b || a.length !== b.length) return 0;
+            let dotProduct = 0, normA = 0, normB = 0;
+            for (let i = 0; i < a.length; i++) {
+                dotProduct += a[i] * b[i];
+                normA += Math.pow(a[i], 2);
+                normB += Math.pow(b[i], 2);
+            }
+            if (normA === 0 || normB === 0) return 0;
+            return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        }
+
+        // ── P01: 채널별 카메라 크기 적용
+        function applyCameraDimensions(ch) {
+            if (!ch.video.videoWidth) return;
+            const w = ch.video.videoWidth, h = ch.video.videoHeight;
+            if (ch.cameraAngle === 90 || ch.cameraAngle === 270) {
+                ch.canvas.width = h; ch.canvas.height = w;
+            } else {
+                ch.canvas.width = w; ch.canvas.height = h;
+            }
+            if (ch.roi.w === 0) {
+                ch.roi = { x:0, y:0, w:ch.canvas.width, h:ch.canvas.height };
+            } else {
+                ch.roi.x = Math.max(0, Math.min(ch.roi.x, ch.canvas.width - 1));
+                ch.roi.y = Math.max(0, Math.min(ch.roi.y, ch.canvas.height - 1));
+                ch.roi.w = Math.max(1, Math.min(ch.roi.w, ch.canvas.width  - ch.roi.x));
+                ch.roi.h = Math.max(1, Math.min(ch.roi.h, ch.canvas.height - ch.roi.y));
+            }
+        }
+
+        // ── P01: 채널별 카메라 시작
+        async function startCamera(ch) {
+            const deviceId = document.getElementById('camera-select').value;
+            ch.deviceId = deviceId;
+            const constraints = {
+                video: { deviceId: deviceId ? { exact: deviceId } : undefined, width:{ ideal:640 }, height:{ ideal:480 } }
+            };
+            try {
+                if (ch.video.srcObject) ch.video.srcObject.getTracks().forEach(t => t.stop());
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                ch.video.srcObject = stream;
+                ch.video.onloadedmetadata = async () => {
+                    await ch.video.play();
+                    applyCameraDimensions(ch);
+                    // 활성 채널이면 cam-status dot 켜기
+                    if (ch.id === activeChannelId) document.getElementById('cam-status').classList.add('active');
+                    ch.isCameraOn = true;
+                    updateChannelTab(ch);
+                    if (ch.animationId) cancelAnimationFrame(ch.animationId);
+                    processVideo(ch);
+                };
+            } catch (err) {
+                alert(`CH${ch.id+1} 카메라 권한을 확인해주세요.`);
+                console.error(err);
+            }
+        }
+
+        const FPS_INTERVAL = 1000 / 30;
+
+        // ── P01: 채널별 독립 영상 처리 루프
+        function processVideo(ch) {
+            if (!ch.isCameraOn) return;
+            if (ch.canvas.width === 0 || ch.canvas.height === 0) {
+                ch.animationId = requestAnimationFrame(() => processVideo(ch));
+                return;
+            }
+            try {
+                const now = performance.now();
+                const elapsed = now - ch.lastFrameTime;
+                if (elapsed > FPS_INTERVAL) {
+                    ch.fps = Math.round(1000 / elapsed);
+                    if (ch.id === activeChannelId) document.getElementById('fps-display').innerText = ch.fps;
+                    ch.lastFrameTime = now - (elapsed % FPS_INTERVAL);
+
+                    const startTime = performance.now();
+                    // 영상 렌더링
+                    ch.ctx.save();
+                    ch.ctx.clearRect(0, 0, ch.canvas.width, ch.canvas.height);
+                    ch.ctx.translate(ch.canvas.width / 2, ch.canvas.height / 2);
+                    if (ch.flipH) ch.ctx.scale(-1, 1);
+                    ch.ctx.rotate(ch.cameraAngle * Math.PI / 180);
+                    ch.ctx.drawImage(ch.video, -ch.video.videoWidth/2, -ch.video.videoHeight/2, ch.video.videoWidth, ch.video.videoHeight);
+                    ch.ctx.restore();
+
+                    if (ch.isFrozen) {
+                        drawOverlay(ch);
+                        ch.animationId = requestAnimationFrame(() => processVideo(ch));
+                        return;
+                    }
+                    if (ch.isInspecting && ((ch.masterMats && ch.masterMats.length > 0) || (ch.masterMat && ch.masterMat.cols > 0))) {
+                        performInspection(ch);
+                    }
+                    drawOverlay(ch);
+
+                    const endTime = performance.now();
+                    if (ch.id === activeChannelId && ch.isInspecting && ch.trackingPoint.found && ch.stableFrames >= 5 && !ch.isFrozen) {
+                        document.getElementById('val-time').innerText = Math.round(endTime - startTime) + 'ms';
+                    }
+                }
+            } catch (error) {
+                let errMsg = error.message || '알 수 없는 오류';
+                if (typeof error === 'number' && typeof cv !== 'undefined' && cv.exceptionFromPtr) {
+                    errMsg = cv.exceptionFromPtr(error).msg;
+                }
+                console.error(`CH${ch.id+1} 비전 처리 오류:`, error, errMsg);
+                if (ch.isInspecting) {
+                    toggleInspectMode(ch);
+                    alert(`CH${ch.id+1} 시스템 에러로 검사가 중지되었습니다.\n\n[에러]\n${errMsg}`);
+                }
+            }
+            ch.animationId = requestAnimationFrame(() => processVideo(ch));
+        }
+
+        // --- 4. 양품/불량 판정 (채널별 독립) ---
+        function performInspection(ch) {
+            if ((!ch.masterMats || ch.masterMats.length === 0) && (!ch.masterMat || ch.masterMat.cols <= 0)) {
+                throw new Error('기준 양품 이미지가 비어있습니다. 새로 등록해주세요.');
+            }
+
+            let src = new cv.Mat(ch.canvas.height, ch.canvas.width, cv.CV_8UC4);
+            src.data.set(ch.ctx.getImageData(0, 0, ch.canvas.width, ch.canvas.height).data);
+
+            let graySrc = new cv.Mat();
+            cv.cvtColor(src, graySrc, cv.COLOR_RGBA2GRAY);
+
+            let blurredSrc = new cv.Mat();
+            cv.GaussianBlur(graySrc, blurredSrc, new cv.Size(5, 5), 0);
+
+            const mastersToCheck = (ch.masterMats && ch.masterMats.length > 0)
+                ? ch.masterMats
+                : [{ mat: ch.masterMat, mask: ch.roiMask, roiMode: ch.roiMode, roi: ch.roi, roiContours: ch.roiContours }];
+
+            let bestMatch = null;
+            let bestSim = -1;
+
+            for (let i = 0; i < mastersToCheck.length; i++) {
+                let mObj = mastersToCheck[i];
+                let mMat = mObj.mat;
+
+                if (!mMat || mMat.cols <= 0 || mMat.rows <= 0) continue;
+
+                let matchX = 0, matchY = 0;
+                let mW = mMat.cols, mH = mMat.rows;
+                let shapeScore = 100;
+                let isMatched = false;
+
+                // ── ROI 위치 직접 비교 방식 ──────────────────────────────
+                // savedRoi(카메라 좌표계 기준)가 있으면 해당 위치를 바로 잘라서 비교
+                // matchTemplate 탐색을 하지 않으므로 ROI 크기에 무관하게 항상 동작
+                const roi = mObj.roi;
+                if (roi && roi.w > 0 && roi.h > 0) {
+                    // ROI를 캔버스 범위 안으로 클램핑
+                    const rx = Math.max(0, Math.min(Math.round(roi.x), blurredSrc.cols - 1));
+                    const ry = Math.max(0, Math.min(Math.round(roi.y), blurredSrc.rows - 1));
+                    const rw = Math.max(1, Math.min(Math.round(roi.w), blurredSrc.cols - rx));
+                    const rh = Math.max(1, Math.min(Math.round(roi.h), blurredSrc.rows - ry));
+
+                    // mMat 크기와 현재 ROI 크기가 다르면 리사이즈해서 비교
+                    let roiPatch = blurredSrc.roi(new cv.Rect(rx, ry, rw, rh));
+                    let comparePatch = new cv.Mat();
+                    if (rw !== mW || rh !== mH) {
+                        cv.resize(roiPatch, comparePatch, new cv.Size(mW, mH), 0, 0, cv.INTER_LINEAR);
+                    } else {
+                        roiPatch.copyTo(comparePatch);
+                    }
+                    roiPatch.delete();
+
+                    // shapeScore: 정규화 상관계수로 계산
+                    try {
+                        let tResult = new cv.Mat();
+                        cv.matchTemplate(comparePatch, mMat, tResult, cv.TM_CCOEFF_NORMED);
+                        let mm = cv.minMaxLoc(tResult);
+                        shapeScore = Math.max(0, mm.maxVal * 100);
+                        tResult.delete();
+                    } catch(e) {
+                        shapeScore = 50; // 계산 실패 시 중간값
+                    }
+
+                    matchX = rx;
+                    matchY = ry;
+                    mW = rw;
+                    mH = rh;
+                    isMatched = true;
+
+                    // diff 계산 (mMat과 크기 맞춤)
+                    let diff = new cv.Mat();
+                    cv.absdiff(mMat, comparePatch, diff);
+                    comparePatch.delete();
+
+                    if (mObj.roiMode === 'auto_contour' && mObj.mask) {
+                        let maskResized = new cv.Mat();
+                        if (diff.cols !== mObj.mask.cols || diff.rows !== mObj.mask.rows) {
+                            cv.resize(mObj.mask, maskResized, new cv.Size(diff.cols, diff.rows), 0, 0, cv.INTER_NEAREST);
+                        } else {
+                            mObj.mask.copyTo(maskResized);
+                        }
+                        let maskedDiff = new cv.Mat();
+                        cv.bitwise_and(diff, maskResized, maskedDiff);
+                        diff.delete(); maskResized.delete();
+                        diff = maskedDiff;
+                    }
+
+                    let threshVal = parseInt(document.getElementById('threshold-bin').value);
+                    let thresh = new cv.Mat();
+                    cv.threshold(diff, thresh, threshVal, 255, cv.THRESH_BINARY);
+
+                    let nonZero = cv.countNonZero(thresh);
+                    let totalPixels = mW * mH;
+                    if (mObj.roiMode === 'auto_contour' && mObj.mask) {
+                        let maskForCount = new cv.Mat();
+                        if (diff.cols !== mObj.mask.cols || diff.rows !== mObj.mask.rows) {
+                            cv.resize(mObj.mask, maskForCount, new cv.Size(diff.cols, diff.rows), 0, 0, cv.INTER_NEAREST);
+                        } else {
+                            mObj.mask.copyTo(maskForCount);
+                        }
+                        totalPixels = cv.countNonZero(maskForCount);
+                        maskForCount.delete();
+                    }
+                    if (totalPixels <= 0) totalPixels = 1;
+
+                    let differenceRatio = (nonZero / totalPixels) * 100;
+                    let pixelSurfaceScore = Math.max(0, 100 - (differenceRatio * 2));
+                    let finalSim = Math.min(pixelSurfaceScore, shapeScore);
+
+                    diff.delete();
+
+                    if (finalSim > bestSim) {
+                        bestSim = finalSim;
+                        if (bestMatch && bestMatch.thresh) bestMatch.thresh.delete();
+                        bestMatch = {
+                            mX: matchX, mY: matchY, mW, mH,
+                            matchRect: new cv.Rect(matchX, matchY, mW, mH),
+                            shapeMatchScore: shapeScore,
+                            pixelSurfaceScore,
+                            finalSimilarity: finalSim,
+                            thresh,
+                            masterObj: mObj
+                        };
+                    } else {
+                        thresh.delete();
+                    }
+
+                } else {
+                    // ── ROI 정보 없는 경우: 기존 matchTemplate 전체 탐색 ─────
+                    if (mMat.cols > blurredSrc.cols || mMat.rows > blurredSrc.rows) continue;
+
+                    let result = new cv.Mat();
+                    try {
+                        cv.matchTemplate(blurredSrc, mMat, result, cv.TM_CCOEFF_NORMED);
+                        let minMax = cv.minMaxLoc(result);
+                        if (minMax.maxVal >= 0.15) {
+                            shapeScore = minMax.maxVal * 100;
+                            matchX = minMax.maxPoint.x;
+                            matchY = minMax.maxPoint.y;
+                            isMatched = true;
+                        }
+                    } catch(e) {}
+                    finally { if(result) result.delete(); }
+
+                    if (isMatched) {
+                        matchX = Math.max(0, Math.min(matchX, blurredSrc.cols - mW));
+                        matchY = Math.max(0, Math.min(matchY, blurredSrc.rows - mH));
+
+                        let matchRect = new cv.Rect(matchX, matchY, mW, mH);
+                        let matchedRoi = blurredSrc.roi(matchRect);
+                        let diff = new cv.Mat();
+                        cv.absdiff(mMat, matchedRoi, diff);
+                        matchedRoi.delete();
+
+                        if (mObj.roiMode === 'auto_contour' && mObj.mask && diff.cols === mObj.mask.cols && diff.rows === mObj.mask.rows) {
+                            let maskedDiff = new cv.Mat();
+                            cv.bitwise_and(diff, mObj.mask, maskedDiff);
+                            diff.delete(); diff = maskedDiff;
+                        }
+
+                        let threshVal = parseInt(document.getElementById('threshold-bin').value);
+                        let thresh = new cv.Mat();
+                        cv.threshold(diff, thresh, threshVal, 255, cv.THRESH_BINARY);
+                        diff.delete();
+
+                        let nonZero = cv.countNonZero(thresh);
+                        let totalPixels = mW * mH;
+                        if (totalPixels <= 0) totalPixels = 1;
+
+                        let differenceRatio = (nonZero / totalPixels) * 100;
+                        let pixelSurfaceScore = Math.max(0, 100 - (differenceRatio * 2));
+                        let finalSim = Math.min(pixelSurfaceScore, shapeScore);
+
+                        if (finalSim > bestSim) {
+                            bestSim = finalSim;
+                            if (bestMatch && bestMatch.thresh) bestMatch.thresh.delete();
+                            bestMatch = { mX: matchX, mY: matchY, mW, mH, matchRect, shapeMatchScore: shapeScore, pixelSurfaceScore, finalSimilarity: finalSim, thresh, masterObj: mObj };
+                        } else {
+                            thresh.delete();
+                        }
+                    }
+                }
+            }
+
+            if (!bestMatch) {
+                ch.trackingPoint.found = false;
+                if (ch.id === activeChannelId) {
+                    document.getElementById('result-display').innerText = 'SEARCHING...';
+                    document.getElementById('result-display').className = 'result-box search';
+                    document.getElementById('val-sim').innerText = '0%';
+                    document.getElementById('val-dl-sim').innerText = '-';
+                }
+                src.delete(); graySrc.delete(); blurredSrc.delete();
+                if (!ch.waitingForResult) { ch.inspectionResultLogged = false; ch.currentResultIsOK = false; }
+                ch.ignoreOkUntilRemoved = false;
+                ch.stableFrames = 0; ch.continuousOkFrames = 0;
+                return;
+            }
+
+            let matchX = bestMatch.mX, matchY = bestMatch.mY, matchW = bestMatch.mW, matchH = bestMatch.mH;
+            let shapeMatchScore = bestMatch.shapeMatchScore;
+            let pixelSurfaceScore = bestMatch.pixelSurfaceScore;
+            let finalSimilarity = bestMatch.finalSimilarity.toFixed(1);
+            let thresh = bestMatch.thresh;
+
+            if (ch.masterMats && ch.masterMats.length > 0) {
+                ch.roi = bestMatch.masterObj.roi;
+                ch.roiMode = bestMatch.masterObj.roiMode;
+                ch.roiContours = bestMatch.masterObj.roiContours || [];
+            }
+
+            const positionStable = !bestMatch.masterObj.roi ||
+                (Math.abs(matchX - ch.lastMatchX) < 30 && Math.abs(matchY - ch.lastMatchY) < 30);
+            if (positionStable) { ch.stableFrames++; }
+            else { ch.stableFrames = Math.max(0, ch.stableFrames - 1); }
+            ch.lastMatchX = matchX; ch.lastMatchY = matchY;
+            ch.trackingPoint = { x: matchX, y: matchY, found: true };
+
+            if (ch.stableFrames < 5) {
+                if (ch.id === activeChannelId) {
+                    document.getElementById('result-display').innerText = 'STABILIZING...';
+                    document.getElementById('result-display').className = 'result-box search';
+                    document.getElementById('val-sim').innerText = '...';
+                    document.getElementById('val-dl-sim').innerText = '...';
+                }
+                src.delete(); graySrc.delete(); blurredSrc.delete(); thresh.delete();
+                return;
+            }
+
+            let isDlActive = document.getElementById('chk-dl-enable').checked && globalIsDlReady;
+            let dlSimScore = 100;
+            if (isDlActive && bestMatch.masterObj && bestMatch.masterObj.dlEmbedding) {
+                let colorRoi = src.roi(bestMatch.matchRect);
+                let tCanvas = document.createElement('canvas');
+                tCanvas.width = matchW; tCanvas.height = matchH;
+                cv.imshow(tCanvas, colorRoi);
+                let emb = computeDLEmbedding(tCanvas);
+                if (emb) dlSimScore = Math.max(0, cosineSimilarity(emb, bestMatch.masterObj.dlEmbedding) * 100);
+                colorRoi.delete();
+            }
+
+            if (ch.id === activeChannelId) {
+                document.getElementById('val-sim').innerText = finalSimilarity + '%';
+                document.getElementById('val-dl-sim').innerText = isDlActive ? dlSimScore.toFixed(1) + '%' : '-';
+            }
+
+            // NG 영역 표시
+            let contours = new cv.MatVector(), hierarchy = new cv.Mat();
+            cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+            for (let i = 0; i < contours.size(); ++i) {
+                let cnt = contours.get(i);
+                if (cv.contourArea(cnt) > 50) {
+                    let r = cv.boundingRect(cnt);
+                    ch.ctx.strokeStyle = '#f44336'; ch.ctx.lineWidth = 2;
+                    ch.ctx.strokeRect(matchX + r.x, matchY + r.y, r.width, r.height);
+                    drawTextUpright(ch, 'NG', matchX + r.x, Math.max(15, matchY + r.y - 5), '#f44336', 'bold 13px sans-serif');
+                }
+                cnt.delete();
+            }
+            const passThreshold = parseFloat(document.getElementById('threshold-sim').value);
+            if (shapeMatchScore < passThreshold && pixelSurfaceScore > shapeMatchScore)
+                drawTextUpright(ch, 'SHAPE MISMATCH!', matchX, Math.max(30, matchY - 15), '#f44336', 'bold 24px sans-serif');
+
+            const dlThreshold = parseFloat(document.getElementById('threshold-dl-sim').value);
+            if (isDlActive && dlSimScore < dlThreshold) {
+                ch.ctx.strokeStyle = '#f44336'; ch.ctx.lineWidth = 4;
+                ch.ctx.strokeRect(matchX, matchY, matchW, matchH);
+                drawTextUpright(ch, 'AI NG!', matchX, Math.max(55, matchY - 35), '#f44336', 'bold 24px sans-serif');
+            }
+
+            let isOK = parseFloat(finalSimilarity) >= passThreshold;
+            if (isDlActive && dlSimScore < dlThreshold) isOK = false;
+            if (isOK) { ch.continuousOkFrames++; } else { ch.continuousOkFrames = 0; }
+
+            if (isOK && ch.continuousOkFrames < 24) {
+                if (ch.id === activeChannelId) {
+                    document.getElementById('result-display').innerText = 'CHECKING...';
+                    document.getElementById('result-display').className = 'result-box search';
+                }
+            } else {
+                updateResult(ch, isOK, finalSimilarity);
+            }
+
+            src.delete(); graySrc.delete(); blurredSrc.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
+        }
+
+        // --- 5. 결과 UI 업데이트 및 로깅 (채널별) ---
+        function updateStatsUI(ch) {
+            if (ch.id !== activeChannelId) { saveSettings(); return; }
+            const rate = ch.stats.total > 0 ? ((ch.stats.ok / ch.stats.total) * 100).toFixed(1) : '0.0';
+            document.getElementById('val-total').innerText = ch.stats.total;
+            document.getElementById('val-ok').innerText   = ch.stats.ok;
+            document.getElementById('val-ng').innerText   = ch.stats.ng;
+            document.getElementById('val-rate').innerText = rate + '%';
+            updateChart(rate);
+            saveSettings();
+        }
+
+        function logHistory(ch, result, similarity, serial = null) {
+            ch.stats.history.push({
+                channel:    ch.name,
+                time:       new Date().toLocaleString('ko-KR'),
+                barcode:    ch.currentBarcodeFull || '-',
+                code:       serial || ch.currentBarcodeCode || '-',
+                result,
+                similarity
+            });
+            saveSettings();
+        }
+
+        function updateResult(ch, isOK, similarity) {
+            const now = Date.now();
+            const simValue = parseFloat(similarity);
+            const shouldUpdateDisplay = (now - ch.inspectThrottle >= 300) ||
+                (ch.lastIsOK !== isOK) || (Math.abs(simValue - ch.lastInspectedSimilarity) >= 2.0);
+
+            if (shouldUpdateDisplay) {
+                ch.inspectThrottle = now;
+                ch.lastInspectedSimilarity = simValue;
+                ch.lastIsOK = isOK;
+
+                if (ch.id === activeChannelId) {
+                    const box = document.getElementById('result-display');
+                    box.className = isOK ? 'result-box ok' : 'result-box ng';
+                    box.innerText  = isOK ? 'OK (양품)' : 'NG (불량)';
+                }
+                updateChannelTab(ch);
+            }
+
+            // 카운트 로직
+            if (isOK) {
+                if (ch.ignoreOkUntilRemoved) return;
+                if (!ch.inspectionResultLogged) {
+                    ch.inspectionResultLogged = true; ch.currentResultIsOK = true;
+                    ch.stats.total++; ch.stats.ok++;
+                    updateStatsUI(ch);
+                    promptOkBarcode(ch, similarity, false);
+                } else if (!ch.currentResultIsOK) {
+                    ch.currentResultIsOK = true;
+                    ch.stats.ng--; ch.stats.ok++;
+                    updateStatsUI(ch);
+                    promptOkBarcode(ch, similarity, true);
+                }
+            } else {
+                if (!ch.inspectionResultLogged) {
+                    ch.inspectionResultLogged = true; ch.currentResultIsOK = false;
+                    ch.stats.total++; ch.stats.ng++;
+                    updateStatsUI(ch);
+                    logHistory(ch, 'NG', similarity);
+                }
+            }
+        }
+
+        function promptOkBarcode(ch, similarity, isUpgrade) {
+            ch.isFrozen = true; ch.currentSerialBarcode = null;
+            if (ch.id === activeChannelId) {
+                document.getElementById('btn-inspect-mode').innerText = '이미지 자동 저장 중...';
+                document.getElementById('btn-inspect-mode').style.background = 'var(--ok-color)';
+            }
+            ch.canvas.toBlob(async (blob) => {
+                ch.capturedOkBlob = blob;
+                if (isUpgrade) {
+                    if (ch.stats.history.length > 0) {
+                        const last = ch.stats.history[ch.stats.history.length - 1];
+                        last.result = 'OK'; last.similarity = similarity;
+                        last.time = new Date().toLocaleString('ko-KR');
+                    }
+                } else {
+                    logHistory(ch, 'OK', similarity, ch.currentBarcodeFull);
+                }
+                await savePassImage(ch);
+                if (ch.id === activeChannelId) {
+                    document.getElementById('btn-inspect-mode').innerText = '다음 검사 대기 중';
+                    document.getElementById('ok-barcode-modal').classList.add('show');
+                    const input = document.getElementById('ok-barcode-input');
+                    input.value = '';
+                    setTimeout(() => input.focus(), 100);
+                }
+            }, 'image/jpeg', 0.92);
+        }
+
+        async function savePassImage(ch) {
+            try {
+                const ts = new Date();
+                const dateStr = ts.getFullYear() + String(ts.getMonth()+1).padStart(2,'0') + String(ts.getDate()).padStart(2,'0');
+                const timeStr = String(ts.getHours()).padStart(2,'0') + String(ts.getMinutes()).padStart(2,'0') + String(ts.getSeconds()).padStart(2,'0');
+                const chPrefix = ch.name.replace(/[\/\\:*?"<>|]/g,'_');
+                const barcodeVal = (ch.currentSerialBarcode || ch.currentBarcodeFull || 'PASS').replace(/[\/\\:*?"<>|]/g,'_');
+                const fileName = `${chPrefix}_${barcodeVal}_${dateStr}_${timeStr}.jpg`;
+                let blob = ch.capturedOkBlob || await new Promise(r => ch.canvas.toBlob(r, 'image/jpeg', 0.92));
+                if (ch.okSaveDirHandle) {
+                    try {
+                        const fh = await ch.okSaveDirHandle.getFileHandle(fileName, { create: true });
+                        const wr = await fh.createWritable();
+                        await wr.write(blob); await wr.close();
+                        ch.capturedOkBlob = null; return;
+                    } catch (fsErr) { console.warn('폴더 저장 실패:', fsErr); }
+                }
+                const url = URL.createObjectURL(blob);
+                const a = Object.assign(document.createElement('a'), { href: url, download: fileName });
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+                ch.capturedOkBlob = null;
+            } catch(e) { console.warn('OK 이미지 저장 실패:', e); ch.capturedOkBlob = null; }
+        }
+
+        // --- 6. ROI 오버레이 (채널별) ---
+        function drawTextUpright(ch, text, x, y, style, font) {
+            ch.ctx.save();
+            ch.ctx.font = font || '14px sans-serif';
+            ch.ctx.fillStyle = style || '#fff';
+            ch.ctx.fillText(text, x, y);
+            ch.ctx.restore();
+        }
+
+        function drawOverlay(ch) {
+            const tracking = ch.isInspecting && ch.trackingPoint.found;
+            const drawW = (ch.masterMats && ch.masterMats.length > 0) ? ch.roi.w : (ch.masterMat ? ch.masterMat.cols : ch.roi.w);
+            const drawH = (ch.masterMats && ch.masterMats.length > 0) ? ch.roi.h : (ch.masterMat ? ch.masterMat.rows : ch.roi.h);
+
+            if (tracking) {
+                ch.ctx.strokeStyle = '#00e676'; ch.ctx.lineWidth = 2;
+                ch.ctx.strokeRect(ch.trackingPoint.x, ch.trackingPoint.y, drawW, drawH);
+                drawTextUpright(ch, 'Tracking ROI', ch.trackingPoint.x, Math.max(15, ch.trackingPoint.y - 5), '#00e676', 'bold 14px sans-serif');
+            } else if (ch.roiMode === 'auto_contour' && ch.roiContours && ch.roiContours.length > 0) {
+                ch.ctx.beginPath();
+                ch.ctx.moveTo(ch.roiContours[0].x, ch.roiContours[0].y);
+                for (let i = 1; i < ch.roiContours.length; i++) ch.ctx.lineTo(ch.roiContours[i].x, ch.roiContours[i].y);
+                ch.ctx.closePath();
+                ch.ctx.strokeStyle = '#9c27b0'; ch.ctx.lineWidth = 3; ch.ctx.stroke();
+                ch.ctx.strokeStyle = 'rgba(156,39,176,0.3)'; ch.ctx.setLineDash([5,5]);
+                ch.ctx.strokeRect(ch.roi.x, ch.roi.y, ch.roi.w, ch.roi.h); ch.ctx.setLineDash([]);
+                drawTextUpright(ch, 'Auto Contour ROI', ch.roi.x, Math.max(15, ch.roi.y - 5), '#9c27b0', 'bold 14px sans-serif');
+            } else {
+                const isSearching = ch.isInspecting && !ch.trackingPoint.found;
+                ch.ctx.strokeStyle = isSearching ? '#ffeb3b' : '#007acc'; ch.ctx.lineWidth = 2;
+                ch.ctx.strokeRect(ch.roi.x, ch.roi.y, ch.roi.w, ch.roi.h);
+                drawTextUpright(ch, isSearching ? 'SEARCHING...' : 'Inspection ROI',
+                    ch.roi.x, Math.max(15, ch.roi.y - 5), isSearching ? '#ffeb3b' : '#007acc', '14px sans-serif');
+            }
+            if (ch.isDrawingROI && ch.dragStart) {
+                ch.ctx.strokeStyle = 'rgba(255,255,0,0.8)'; ch.ctx.setLineDash([5,5]);
+                ch.ctx.strokeRect(ch.dragStart.x, ch.dragStart.y, ch.mouseX - ch.dragStart.x, ch.mouseY - ch.dragStart.y);
+                ch.ctx.setLineDash([]);
+            }
+        }
+
+        function toggleInspectMode(ch) {
+            ch = ch || ach();
+            const btnInspect = document.getElementById('btn-inspect-mode');
+            ch.isInspecting = !ch.isInspecting;
+            if (ch.isInspecting) {
+                ch.lastInspectedSimilarity = -1; ch.lastIsOK = null; ch.inspectThrottle = 0;
+                ch.trackingPoint.found = false; ch.stableFrames = 0; ch.continuousOkFrames = 0;
+                ch.isFrozen = false; ch.waitingForResult = false;
+                ch.inspectionResultLogged = false; ch.currentResultIsOK = false;
+                if (ch.id === activeChannelId) {
+                    btnInspect.innerText = '검사 중지'; btnInspect.style.background = 'var(--ng-color)';
+                    document.getElementById('result-display').innerText = 'SEARCHING...';
+                    document.getElementById('result-display').className = 'result-box search';
+                }
+            } else {
+                ch.trackingPoint.found = false; ch.isFrozen = false;
+                if (ch.id === activeChannelId) {
+                    btnInspect.innerText = '검사 시작 (연속 모드)'; btnInspect.style.background = 'var(--ok-color)';
+                    document.getElementById('result-display').innerText = 'WAIT';
+                    document.getElementById('result-display').className = 'result-box';
+                }
+            }
+            updateChannelTab(ch);
+        }
+
+        // --- 7. 기준 양품(Master) 등록 (채널별) ---
+        // 모달에 현재 활성 채널 참조를 임시 저장
+        let _modalChannel = null;
+
+        function setMasterImage() {
+            const ch = ach();
+            if (!ch.isCameraOn) { alert(`CH${ch.id+1} 카메라를 먼저 연결해주세요.`); return; }
+            if (ch.roi.w === 0 || ch.roi.h === 0) { alert('ROI 영역을 설정해주세요.'); return; }
+
+            const wasInspecting = ch.isInspecting;
+            ch.isInspecting = false; ch.isFrozen = false;
+
+            let rx = Math.max(0, Math.round(ch.roi.x)), ry = Math.max(0, Math.round(ch.roi.y));
+            if (rx >= ch.canvas.width) rx = 0;
+            if (ry >= ch.canvas.height) ry = 0;
+            const rw = Math.max(1, Math.min(Math.round(ch.roi.w), ch.canvas.width  - rx));
+            const rh = Math.max(1, Math.min(Math.round(ch.roi.h), ch.canvas.height - ry));
+            ch.roi = { x: rx, y: ry, w: rw, h: rh };
+
+            const cleanCanvas = document.createElement('canvas');
+            cleanCanvas.width = ch.canvas.width; cleanCanvas.height = ch.canvas.height;
+            const cCtx = cleanCanvas.getContext('2d');
+            cCtx.save();
+            cCtx.translate(cleanCanvas.width/2, cleanCanvas.height/2);
+            if (ch.flipH) cCtx.scale(-1,1);
+            cCtx.rotate(ch.cameraAngle * Math.PI/180);
+            cCtx.drawImage(ch.video, -ch.video.videoWidth/2, -ch.video.videoHeight/2, ch.video.videoWidth, ch.video.videoHeight);
+            cCtx.restore();
+
+            const src = cv.imread(cleanCanvas);
+            const roiSrc = src.roi(new cv.Rect(rx, ry, rw, rh));
+            if (ch.masterMat) ch.masterMat.delete();
+            ch.masterMat = new cv.Mat();
+            cv.cvtColor(roiSrc, ch.masterMat, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(ch.masterMat, ch.masterMat, new cv.Size(5,5), 0);
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = rw; tempCanvas.height = rh;
+            tempCanvas.getContext('2d').drawImage(cleanCanvas, rx, ry, rw, rh, 0, 0, rw, rh);
+            const dataURL = tempCanvas.toDataURL('image/png');
+            document.getElementById('master-img-preview').src = dataURL;
+            ch.masterImageDataURL = dataURL;
+            src.delete(); roiSrc.delete();
+
+            if (ch.masterMats) ch.masterMats.forEach(m => { if(m.mat) m.mat.delete(); if(m.mask) m.mask.delete(); });
+            ch.masterMats = [];
+            ch.masterMats.push({ mat: ch.masterMat.clone(), mask: ch.roiMask ? ch.roiMask.clone() : null,
+                roiMode: ch.roiMode, roi: {...ch.roi}, roiContours: [...ch.roiContours],
+                dlEmbedding: computeDLEmbedding(tempCanvas) });
+
+            if (wasInspecting) ch.isInspecting = true;
+            _modalChannel = ch;
+            openSaveMasterModal(dataURL, ch);
+        }
+
+        function openSaveMasterModal(dataURL, ch) {
+            ch = ch || ach();
+            document.getElementById('modal-preview-img').src = dataURL;
+            document.getElementById('master-save-filename').value = '';
+            const hint = document.getElementById('modal-folder-hint');
+            if (ch.selectedFolderName) {
+                hint.innerHTML = `✅ 저장 시 <b style="color:#a5b4fc">[${ch.selectedFolderName}]</b> 에 자동 등록됩니다.`;
+                hint.style.color = ''; hint.style.display = 'block';
+            } else {
+                hint.innerHTML = '💡 양품 폴더를 먼저 지정하면 저장 즉시 바코드 자동 매칭이 가능합니다.';
+                hint.style.color = '#888'; hint.style.display = 'block';
+            }
+            document.getElementById('save-master-modal').classList.add('show');
+            setTimeout(() => document.getElementById('master-save-filename').focus(), 100);
+        }
+
+        function closeSaveMasterModal() { document.getElementById('save-master-modal').classList.remove('show'); }
+
+        async function saveMasterImageFile() {
+            const ch = _modalChannel || ach();
+            const rawName = document.getElementById('master-save-filename').value.trim();
+            if (!rawName) { alert('파일명을 입력해주세요.'); document.getElementById('master-save-filename').focus(); return; }
+            const safeName = rawName.replace(/[\/\\:*?"<>|]/g,'_');
+            const dataURL = ch.masterImageDataURL;
+            if (!dataURL) { alert('저장할 이미지가 없습니다.'); return; }
+
+            ch.masterFileRegistry[safeName] = { dataURL, savedRoi:{...ch.roi}, roiMode:ch.roiMode, roiContours:ch.roiContours?[...ch.roiContours]:[] };
+            renderRegistryList(ch);
+            saveSettings();
+
+            let savedDirectly = false;
+            if (ch.masterSaveDirHandle) {
+                try {
+                    const blob = await (await fetch(dataURL)).blob();
+                    const fh = await ch.masterSaveDirHandle.getFileHandle(safeName+'.png',{create:true});
+                    const wr = await fh.createWritable();
+                    await wr.write(blob); await wr.close();
+                    savedDirectly = true;
+                } catch(err) { console.warn('폴더 저장 실패:', err); }
+            }
+            if (!savedDirectly) {
+                const a = Object.assign(document.createElement('a'),{href:dataURL,download:safeName+'.png'});
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            }
+
+            if (ch.selectedFolderName && ch.id === activeChannelId) {
+                document.getElementById('folder-status').innerHTML =
+                    `<span style="color:#7986cb">📁 ${ch.selectedFolderName}</span><br>` +
+                    `<span style="color:#00e676">✅ "${safeName}" 등록됨 (총 ${Object.keys(ch.masterFileRegistry).length}개)</span>`;
+            }
+            closeSaveMasterModal();
+            alert(`✅ "${safeName}.png" 저장 완료!\n바코드 코드 [${safeName}] 인식 시 자동 양품 등록됩니다.`);
+        }
+
+        function renderRegistryList(ch) {
+            ch = ch || ach();
+            if (ch.id !== activeChannelId) return;   // 활성 채널만 UI 갱신
+            const count = Object.keys(ch.masterFileRegistry).length;
+            document.getElementById('folder-registry-count').textContent = `등록된 양품: ${count} 개`;
+            const list = document.getElementById('registry-list');
+            list.innerHTML = '';
+            Object.keys(ch.masterFileRegistry).forEach(name => {
+                const entry = ch.masterFileRegistry[name];
+                const item = document.createElement('div'); item.className = 'registry-item';
+                const thumb = document.createElement('img'); thumb.src = entry.dataURL; thumb.alt = name;
+                const label = document.createElement('span'); label.className = 'registry-item-name';
+                label.textContent = name; label.title = name;
+                const delBtn = document.createElement('button'); delBtn.className = 'registry-item-del'; delBtn.textContent = '삭제';
+                delBtn.onclick = () => {
+                    if (!confirm(`"${name}" 양품을 삭제하겠습니까?`)) return;
+                    delete ch.masterFileRegistry[name]; saveSettings(); renderRegistryList(ch);
+                };
+                item.append(thumb, label, delBtn); list.appendChild(item);
+            });
+        }
+        function updateFolderRegistryCount(ch) { renderRegistryList(ch || ach()); }
+
+        const SETTINGS_KEY = 'vision_inspector_v2';
+
+        function saveSettings() {
+            try {
+                // 공통 설정
+                const global = {
+                    thresholdSim:   document.getElementById('threshold-sim').value,
+                    thresholdBin:   document.getElementById('threshold-bin').value,
+                    dlEnable:       document.getElementById('chk-dl-enable').checked,
+                    thresholdDlSim: document.getElementById('threshold-dl-sim').value
+                };
+                // 채널별 설정 (dataURL 제외하여 용량 절감)
+                const chData = channels.map(ch => ({
+                    name: ch.name,
+                    deviceId: ch.deviceId,
+                    cameraAngle: ch.cameraAngle,
+                    flipH: ch.flipH,
+                    selectedFolderName: ch.selectedFolderName,
+                    okSaveFolderName: ch.okSaveFolderName,
+                    registry: Object.fromEntries(
+                        Object.entries(ch.masterFileRegistry).map(([k,v]) => [k, { savedRoi:v.savedRoi, roiMode:v.roiMode, roiContours:v.roiContours }])
+                    ),
+                    stats: { total:ch.stats.total, ok:ch.stats.ok, ng:ch.stats.ng, history:ch.stats.history.slice(-200) },
+                    statsDate: new Date().toLocaleDateString()
+                }));
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify({ global, channels: chData }));
+            } catch(e) { console.warn('설정 저장 실패(용량 초과 가능):', e); }
+        }
+
+        function loadSettings() {
+            try {
+                const raw = localStorage.getItem(SETTINGS_KEY);
+                if (!raw) return;
+                const data = JSON.parse(raw);
+
+                // 공통 설정 복원
+                if (data.global) {
+                    const g = data.global;
+                    if (g.thresholdSim !== undefined) { document.getElementById('threshold-sim').value = g.thresholdSim; document.getElementById('sim-val').innerText = g.thresholdSim+'%'; }
+                    if (g.thresholdBin !== undefined) document.getElementById('threshold-bin').value = g.thresholdBin;
+                    if (g.dlEnable !== undefined) document.getElementById('chk-dl-enable').checked = g.dlEnable;
+                    if (g.thresholdDlSim !== undefined) { document.getElementById('threshold-dl-sim').value = g.thresholdDlSim; document.getElementById('dl-sim-val').innerText = g.thresholdDlSim+'%'; }
+                }
+
+                // 채널별 설정 복원 (dataURL 없이 메타만)
+                if (data.channels) {
+                    data.channels.forEach((cd, i) => {
+                        if (i >= channels.length) return;
+                        const ch = channels[i];
+                        if (cd.name) { ch.name = cd.name; document.getElementById(`ch-name-${i}`).value = cd.name; }
+                        if (cd.deviceId) ch.deviceId = cd.deviceId;
+                        if (cd.cameraAngle !== undefined) ch.cameraAngle = cd.cameraAngle;
+                        if (cd.flipH !== undefined) ch.flipH = cd.flipH;
+                        if (cd.selectedFolderName) {
+                            ch.selectedFolderName = cd.selectedFolderName;
+                            if (i === activeChannelId) document.getElementById('folder-status').innerHTML =
+                                `<span style="color:#7986cb">📁 ${cd.selectedFolderName}</span><br><span style="color:#888;font-size:0.72rem;">※ 재시작 시 폴더를 다시 선택해주세요</span>`;
+                        }
+                        if (cd.okSaveFolderName) {
+                            ch.okSaveFolderName = cd.okSaveFolderName;
+                            if (i === activeChannelId) document.getElementById('ok-folder-status').innerHTML =
+                                `<span style="color:#ffeb3b">📁 ${cd.okSaveFolderName}</span><br><span style="font-size:0.72rem;color:#888;">※ 재시작 시 저장 폴더를 다시 선택해주세요</span>`;
+                        }
+                        if (cd.registry) {
+                            // dataURL 없는 메타만 복원 (이미지는 폴더 재선택 시 로드)
+                            Object.entries(cd.registry).forEach(([k,v]) => {
+                                ch.masterFileRegistry[k] = { dataURL:'', ...v };
+                            });
+                            if (i === activeChannelId) renderRegistryList(ch);
+                        }
+                        const today = new Date().toLocaleDateString();
+                        if (cd.stats && cd.statsDate === today) {
+                            ch.stats = cd.stats;
+                            if (i === activeChannelId) updateStatsUI(ch);
+                        }
+                    });
+                }
+
+            } catch(e) {
+                console.warn('설정 복원 실패:', e);
+            }
+        }
+
+        function initChart() {
+            const ctxChart = document.getElementById('stats-chart').getContext('2d');
+            chartInstance = new Chart(ctxChart, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '양품률(%)',
+                        data: [],
+                        borderColor: '#4caf50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        tension: 0.3,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { min: 0, max: 100, grid: { color: '#444' }, ticks: { color: '#ccc' } },
+                        x: { grid: { color: '#444' }, ticks: { color: '#ccc' } }
+                    },
+                    plugins: { legend: { labels: { color: '#fff' } } }
+                }
+            });
+        }
+
+        function updateChart(rate) {
+            const now = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" });
+            if (chartInstance.data.labels.length > 20) {
+                chartInstance.data.labels.shift();
+                chartInstance.data.datasets[0].data.shift();
+            }
+            chartInstance.data.labels.push(now);
+            chartInstance.data.datasets[0].data.push(rate);
+            chartInstance.update();
+        }
+
+        function updateTime() {
+            document.getElementById('time-display').innerText = new Date().toLocaleString();
+        }
+
+        // ── P02: 라이트/다크 테마 토글 ──
+        const THEME_KEY = 'vlm_aoi_theme';
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            const btn = document.getElementById('btn-theme-toggle');
+            if (btn) btn.innerHTML = theme === 'light' ? '☀️ 라이트' : '🌙 다크';
+            localStorage.setItem(THEME_KEY, theme);
+        }
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme') || 'dark';
+            applyTheme(current === 'dark' ? 'light' : 'dark');
+        }
+        // 초기 테마 적용 (저장값 우선, 없으면 dark)
+        (function() {
+            const saved = localStorage.getItem(THEME_KEY) || 'dark';
+            document.documentElement.setAttribute('data-theme', saved);
+            // 버튼은 DOM 로딩 후 업데이트 (DOMContentLoaded)
+            document.addEventListener('DOMContentLoaded', () => applyTheme(saved));
+        })();
+
+        function downloadXLSX() {
+            // 전체 채널 이력 합산
+            const allHistory = channels.flatMap(ch => (ch.stats.history || []).map(e => ({ ...e, channel: ch.name })));
+            if (allHistory.length === 0) { alert("저장할 데이터가 없습니다."); return; }
+            const totalAll = channels.reduce((a,c) => a + c.stats.total, 0);
+            const okAll    = channels.reduce((a,c) => a + c.stats.ok,    0);
+            const ngAll    = channels.reduce((a,c) => a + c.stats.ng,    0);
+
+            const headers = ['채널', '검사일시', '모델 바코드', '시리얼 바코드', '판정결과', '유사도(%)'];
+            const rows = allHistory.map(e => [e.channel||'CH1', e.time, e.barcode, e.code, e.result, e.similarity]);
+
+            const wsData = [headers, ...rows];
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+            ws['!cols'] = [{ wch: 10 }, { wch: 22 }, { wch: 20 }, { wch: 20 }, { wch: 10 }, { wch: 12 }];
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, '검사이력');
+
+            const summary = [
+                ['검사 요약'],
+                ['총 검사수량', totalAll],
+                ['OK 수량',     okAll],
+                ['NG 수량',     ngAll],
+                ['양품률(%)',   totalAll > 0 ? ((okAll / totalAll)*100).toFixed(1) : '0.0'],
+                ['저장일시',    new Date().toLocaleString('ko-KR')]
+            ];
+            const ws2 = XLSX.utils.aoa_to_sheet(summary);
+            ws2['!cols'] = [{ wch: 16 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(wb, ws2, '요약');
+
+            const ts = new Date();
+            const fname = `검사이력_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}.xlsx`;
+            XLSX.writeFile(wb, fname);
+        }
+
+        function getMousePos(e, rect, ch) {
+            ch = ch || ach();
+            let rawX = e.clientX - rect.left;
+            let rawY = e.clientY - rect.top;
+            if (ch.flipH) rawX = rect.width - rawX;
+            return {
+                x: Math.round(rawX * (ch.canvas.width  / rect.width)),
+                y: Math.round(rawY * (ch.canvas.height / rect.height))
+            };
+        }
+
+        function setupEventListeners() {
+            // 채널별 버튼 (탭 클릭은 P01-C HTML에서 onclick으로 바인딩됨)
+            document.getElementById('btn-start-cam').addEventListener('click', () => startCamera(ach()));
+            document.getElementById('btn-set-master').addEventListener('click', setMasterImage);
+            document.getElementById('btn-inspect-mode').addEventListener('click', () => toggleInspectMode(ach()));
+
+            document.getElementById('chk-flip-h').addEventListener('change', (e) => {
+                ach().flipH = e.target.checked; saveSettings();
+            });
+
+            document.getElementById('camera-angle').addEventListener('change', (e) => {
+                ach().cameraAngle = parseInt(e.target.value);
+                applyCameraDimensions(ach()); saveSettings();
+            });
+
+            document.getElementById('btn-reset-stats').addEventListener('click', () => {
+                if(!confirm("오늘의 검사 기록 및 카운트를 모두 초기화하시겠습니까?")) return;
+                channels.forEach(ch => { ch.stats = { total:0, ok:0, ng:0, history:[] }; updateChannelTab(ch); });
+                saveSettings();
+                document.getElementById('val-total').innerText = '0';
+                document.getElementById('val-ok').innerText = '0';
+                document.getElementById('val-ng').innerText = '0';
+                document.getElementById('val-rate').innerText = '0.0%';
+                document.getElementById('val-dl-sim').innerText = '-';
+                chartInstance.data.labels = [];
+                chartInstance.data.datasets[0].data = [];
+                chartInstance.update();
+            });
+
+            document.getElementById('btn-ok-folder-pick').addEventListener('click', async () => {
+                const ch = ach();
+                if (window.showDirectoryPicker) {
+                    try {
+                        const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                        ch.okSaveDirHandle   = dirHandle;
+                        ch.okSaveFolderName  = dirHandle.name;
+                        document.getElementById('ok-folder-status').innerHTML =
+                            `<span style="color:#00e676">✅ ${dirHandle.name}</span><br>` +
+                            `<span style="font-size:0.72rem;color:#7986cb;">OK 판정 이미지가 이 폴더에 자동 저장됩니다.</span>`;
+                    } catch (err) {
+                        if (err.name !== 'AbortError') console.error('폴더 선택 오류:', err);
+                    }
+                } else {
+                    document.getElementById('ok-folder-file-input').click();
+                }
+            });
+
+            document.getElementById('ok-folder-file-input').addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length > 0) {
+                    const folderPath = files[0].webkitRelativePath.split('/')[0];
+                    ach().okSaveFolderName = folderPath;
+                    document.getElementById('ok-folder-status').innerHTML =
+                        `<span style="color:#ffeb3b">📁 ${folderPath}</span><br>` +
+                        `<span style="font-size:0.72rem;color:#888;">※ 이 브라우저는 직접 저장을 지원하지 않아 다운로드 폴더에 저장됩니다.</span>`;
+                }
+                e.target.value = '';
+            });
+
+            document.getElementById('btn-modal-save').addEventListener('click', saveMasterImageFile);
+            document.getElementById('btn-modal-cancel').addEventListener('click', closeSaveMasterModal);
+            document.getElementById('master-save-filename').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') saveMasterImageFile();
+                if (e.key === 'Escape') closeSaveMasterModal();
+            });
+
+            // [수정] OK 바코드 모달 확인(확인 및 시작) → 다음 검사 시작
+            document.getElementById('btn-ok-barcode-save').addEventListener('click', async () => {
+                if (!document.getElementById('ok-barcode-modal').classList.contains('show')) return; 
+                
+                document.getElementById('ok-barcode-modal').classList.remove('show');
+                const serial = document.getElementById('ok-barcode-input').value.trim();
+                
+                // 상태 초기화 (검사 재개를 위해 리셋)
+                const _mch = _modalChannel || ach();
+                _mch.isFrozen = false;
+                _mch.stableFrames = 0;
+                _mch.continuousOkFrames = 0;
+                _mch.waitingForResult = false;
+                _mch.inspectionResultLogged = false;
+                _mch.currentResultIsOK = false;
+                _mch.lastInspectedSimilarity = -1;
+                _mch.lastIsOK = null;
+                _mch.inspectThrottle = 0;
+
+                // 다음 바코드 입력값으로 새로운 검사 자동 시작
+                if (serial) {
+                    document.getElementById('barcode-input').value = serial;
+                    const extracted = serial.length >= 5 ? serial.substring(4, 14) : '';
+                    document.getElementById('barcode-extracted').textContent = extracted || '-';
+                    processBarcodeInput(_mch, serial, extracted);
+                } else {
+                    const hasMaster = (_mch.masterMats && _mch.masterMats.length > 0) || (_mch.masterMat && _mch.masterMat.cols > 0);
+                    if (_mch.isCameraOn && hasMaster) {
+                        _mch.trackingPoint.found = false;
+                        _mch.isInspecting = true;
+                        document.getElementById('btn-inspect-mode').innerText = "검사 중지";
+                        document.getElementById('btn-inspect-mode').style.background = "var(--ng-color)";
+                        document.getElementById('result-display').innerText = "SEARCHING...";
+                        document.getElementById('result-display').className = "result-box search";
+                    } else {
+                        _mch.isInspecting = false;
+                        document.getElementById('btn-inspect-mode').innerText = "검사 시작 (연속 모드)";
+                        document.getElementById('btn-inspect-mode').style.background = "var(--ok-color)";
+                        document.getElementById('result-display').innerText = "WAIT";
+                        document.getElementById('result-display').className = "result-box";
+                    }
+                }
+
+                setTimeout(() => document.getElementById('barcode-input').focus(), 100);
+            });
+
+            // [수정] 모달 닫기 버튼 → 검사 대기(중지) 상태로 변경
+            document.getElementById('btn-ok-barcode-cancel').addEventListener('click', () => {
+                document.getElementById('ok-barcode-modal').classList.remove('show');
+                const _mch = _modalChannel || ach();
+                _mch.isFrozen = false; _mch.stableFrames = 0; _mch.continuousOkFrames = 0;
+                _mch.waitingForResult = false; _mch.inspectionResultLogged = false; _mch.currentResultIsOK = false;
+                _mch.lastInspectedSimilarity = -1; _mch.lastIsOK = null; _mch.inspectThrottle = 0;
+                _mch.isInspecting = false;
+                document.getElementById('btn-inspect-mode').innerText = "검사 시작 (연속 모드)";
+                document.getElementById('btn-inspect-mode').style.background = "var(--ok-color)";
+                document.getElementById('result-display').innerText = "WAIT";
+                document.getElementById('result-display').className = "result-box";
+
+                setTimeout(() => document.getElementById('barcode-input').focus(), 100);
+            });
+
+            let okBarcodeTimer = null;
+            document.getElementById('ok-barcode-input').addEventListener('input', (e) => {
+                clearTimeout(okBarcodeTimer);
+                if (e.target.value.trim().length > 0) {
+                    okBarcodeTimer = setTimeout(() => {
+                        document.getElementById('btn-ok-barcode-save').click();
+                    }, 300);
+                }
+            });
+
+            document.getElementById('ok-barcode-input').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    clearTimeout(okBarcodeTimer); 
+                    document.getElementById('btn-ok-barcode-save').click();
+                }
+                if (e.key === 'Escape') document.getElementById('btn-ok-barcode-cancel').click();
+            });
+
+            document.getElementById('btn-folder-pick').addEventListener('click', async () => {
+                const ch = ach();
+                if (window.showDirectoryPicker) {
+                    try {
+                        const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                        ch.masterSaveDirHandle = dirHandle;
+                        ch.selectedFolderName  = dirHandle.name;
+                        document.getElementById('folder-status').innerHTML =
+                            `<span style="color:#7986cb">📁 ${dirHandle.name}</span><br>` +
+                            `<span style="color:#888">폴더의 이미지를 로드합니다...</span>`;
+                        let loaded = 0;
+                        for await (const entry of dirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.match(/\.(png|jpg|jpeg)$/i)) {
+                                const file = await entry.getFile();
+                                const keyName = file.name.replace(/\.[^/.]+$/, '');
+                                const reader = new FileReader();
+                                reader.onload = function(ev) {
+                                    const dataURL = ev.target.result;
+                                    const img = new Image();
+                                    img.onload = function() {
+                                        let existing = ch.masterFileRegistry[keyName];
+                                        let targetRoi;
+                                        if (existing && existing.savedRoi) {
+                                            targetRoi = { ...existing.savedRoi };
+                                        } else {
+                                            let camW = ch.canvas.width || 640, camH = ch.canvas.height || 480;
+                                            let drawW = Math.min(img.width, camW), drawH = Math.min(img.height, camH);
+                                            targetRoi = { x: Math.max(0,Math.round((camW-drawW)/2)), y: Math.max(0,Math.round((camH-drawH)/2)), w:drawW, h:drawH };
+                                        }
+                                        let tCanvas = document.createElement('canvas');
+                                        tCanvas.width = targetRoi.w; tCanvas.height = targetRoi.h;
+                                        tCanvas.getContext('2d').drawImage(img, 0, 0, targetRoi.w, targetRoi.h);
+                                        computeDLEmbedding(tCanvas);
+                                        ch.masterFileRegistry[keyName] = { dataURL, savedRoi: targetRoi, roiMode: existing ? existing.roiMode : 'rect', roiContours: existing ? existing.roiContours : [] };
+                                        loaded++;
+                                        updateFolderRegistryCount(ch); saveSettings();
+                                        document.getElementById('folder-status').innerHTML =
+                                            `<span style="color:#7986cb">📁 ${dirHandle.name}</span><br>` +
+                                            `<span style="color:#00e676">✅ ${loaded}개 양품 이미지 로드 완료</span>`;
+                                    };
+                                    img.src = dataURL;
+                                };
+                                reader.readAsDataURL(file);
+                            }
+                        }
+                    } catch (err) {
+                        if (err.name !== 'AbortError') console.error('폴더 선택 오류:', err);
+                    }
+                } else {
+                    document.getElementById('folder-file-input').click();
+                }
+            });
+
+            document.getElementById('folder-file-input').addEventListener('change', (e) => {
+                const ch = ach();
+                const files = Array.from(e.target.files);
+                if (!files.length) return;
+                const imageFiles = files.filter(f => f.type.startsWith('image/'));
+                if (!imageFiles.length) { document.getElementById('folder-status').textContent = '이미지 파일이 없습니다.'; return; }
+                const folderName = imageFiles[0].webkitRelativePath ? imageFiles[0].webkitRelativePath.split('/')[0] : '선택된 파일들';
+                ch.selectedFolderName = folderName;
+                document.getElementById('folder-status').innerHTML =
+                    `<span style="color:#7986cb">📁 ${folderName}</span><br>` +
+                    `<span style="color:#888">${imageFiles.length}개 이미지 로드 중...</span>`;
+                let loaded = 0;
+                imageFiles.forEach(file => {
+                    const keyName = file.name.replace(/\.[^/.]+$/, '');
+                    const reader = new FileReader();
+                    reader.onload = function(ev) {
+                        const dataURL = ev.target.result;
+                        const img = new Image();
+                        img.onload = function() {
+                            let existing = ch.masterFileRegistry[keyName];
+                            let targetRoi;
+                            if (existing && existing.savedRoi) {
+                                targetRoi = { ...existing.savedRoi };
+                            } else {
+                                let camW = ch.canvas.width||640, camH = ch.canvas.height||480;
+                                let drawW = Math.min(img.width,camW), drawH = Math.min(img.height,camH);
+                                targetRoi = { x:Math.max(0,Math.round((camW-drawW)/2)), y:Math.max(0,Math.round((camH-drawH)/2)), w:drawW, h:drawH };
+                            }
+                            ch.masterFileRegistry[keyName] = { dataURL, savedRoi:targetRoi, roiMode: existing?existing.roiMode:'rect', roiContours: existing?existing.roiContours:[] };
+                            loaded++;
+                            if (loaded === imageFiles.length) {
+                                updateFolderRegistryCount(ch); saveSettings();
+                                document.getElementById('folder-status').innerHTML =
+                                    `<span style="color:#7986cb">📁 ${folderName}</span><br>` +
+                                    `<span style="color:#00e676">✅ ${imageFiles.length}개 양품 이미지 등록 완료</span>`;
+                            }
+                        };
+                        img.src = dataURL;
+                    };
+                    reader.readAsDataURL(file);
+                });
+                e.target.value = '';
+            });
+
+            const barcodeInput = document.getElementById('barcode-input');
+            barcodeInput.addEventListener('input', () => {
+                const full = barcodeInput.value;
+                document.getElementById('barcode-fullval').textContent = '전체값: ' + (full || '-');
+
+                const extracted = full.length >= 5 ? full.substring(4, 14) : '';
+                document.getElementById('barcode-extracted').textContent = extracted || '-';
+
+                const _ch = ach();
+                clearTimeout(_ch.barcodeDebounceTimer);
+                if (full.length > 0) {
+                    _ch.barcodeDebounceTimer = setTimeout(() => {
+                        processBarcodeInput(_ch, full, extracted);
+                    }, 300);
+                } else {
+                    document.getElementById('barcode-match-status').textContent = '대기중';
+                    document.getElementById('barcode-match-status').style.color = '#888';
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (document.getElementById('save-master-modal').classList.contains('show')) return;
+                if (document.getElementById('ok-barcode-modal').classList.contains('show')) return; 
+                if (ach().isFrozen) return;
+
+                const active = document.activeElement;
+                if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA')) return;
+                barcodeInput.focus();
+            });
+            
+            document.getElementById('master-upload').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const ch = ach();
+                let wasInspecting = ch.isInspecting;
+                ch.isInspecting = false;
+                const baseName = file.name.replace(/\.[^/.]+$/, '');
+                if (ch.masterMats) { ch.masterMats.forEach(m => { if (m.mat) m.mat.delete(); if (m.mask) m.mask.delete(); }); }
+                ch.masterMats = [];
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    const img = new Image();
+                    img.onload = function() {
+                        let camW = ch.canvas.width||640, camH = ch.canvas.height||480;
+                        let drawW = Math.min(img.width,camW), drawH = Math.min(img.height,camH);
+                        let existing = ch.masterFileRegistry[baseName];
+                        let targetRoi, currentMode = 'rect', currentMask = null, currentContours = [];
+                        if (existing && existing.savedRoi) {
+                            targetRoi = { ...existing.savedRoi };
+                            currentMode = existing.roiMode || 'rect';
+                            currentContours = existing.roiContours ? [...existing.roiContours] : [];
+                            if (currentMode === 'auto_contour' && currentContours.length > 0) {
+                                try {
+                                    currentMask = cv.Mat.zeros(targetRoi.h, targetRoi.w, cv.CV_8UC1);
+                                    let pts = currentContours.flatMap(p => [p.x - targetRoi.x, p.y - targetRoi.y]);
+                                    let offsetCnt = cv.matFromArray(pts.length/2, 1, cv.CV_32SC2, pts);
+                                    let mContours = new cv.MatVector(); mContours.push_back(offsetCnt);
+                                    cv.drawContours(currentMask, mContours, 0, new cv.Scalar(255), -1, cv.LINE_8, new cv.Mat(), 0);
+                                    offsetCnt.delete(); mContours.delete();
+                                } catch(err) { console.error("단일 파일 ROI 마스크 복원 에러:", err); }
+                            }
+                        } else {
+                            targetRoi = { x:Math.max(0,Math.round((camW-drawW)/2)), y:Math.max(0,Math.round((camH-drawH)/2)), w:drawW, h:drawH };
+                        }
+                        let tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = targetRoi.w; tempCanvas.height = targetRoi.h;
+                        tempCanvas.getContext('2d').drawImage(img, 0, 0, targetRoi.w, targetRoi.h);
+                        let tempMat = cv.imread(tempCanvas), newMat = new cv.Mat();
+                        cv.cvtColor(tempMat, newMat, cv.COLOR_RGBA2GRAY);
+                        cv.GaussianBlur(newMat, newMat, new cv.Size(5,5), 0);
+                        document.getElementById('master-img-preview').src = tempCanvas.toDataURL();
+                        ch.masterImageDataURL = tempCanvas.toDataURL('image/png');
+                        tempMat.delete();
+                        ch.roi = targetRoi; ch.roiMode = currentMode; ch.roiContours = currentContours;
+                        if (ch.roiMask) ch.roiMask.delete();
+                        ch.roiMask = currentMask;
+                        if (ch.masterMat) ch.masterMat.delete();
+                        ch.masterMat = newMat;
+                        let dlArr = computeDLEmbedding(tempCanvas);
+                        ch.masterMats.push({ mat:newMat.clone(), mask:currentMask?currentMask.clone():null, roiMode:currentMode, roi:targetRoi, roiContours:currentContours, dlEmbedding:dlArr });
+                        if (wasInspecting) ch.isInspecting = true;
+                        alert(`[${baseName}] 이미지가 양품 기준으로 설정되었습니다.`);
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+
+            document.getElementById('btn-export-csv').addEventListener('click', downloadXLSX);
+
+            // ROI 드래그 — 채널별 canvas에 이벤트 바인딩은 bindCanvasEvents(ch) 에서 처리
+            document.getElementById('btn-draw-rect-roi').addEventListener('click', () => {
+                const ch = ach();
+                ch.isDrawingMode = true; ch.roiDrawingType = 'rect';
+                ch.canvas.style.cursor = 'crosshair';
+                alert("영상 위를 드래그하여 [사각형 검사 영역]을 지정하세요.");
+            });
+            document.getElementById('btn-draw-auto-roi').addEventListener('click', () => {
+                const ch = ach();
+                ch.isDrawingMode = true; ch.roiDrawingType = 'auto';
+                ch.canvas.style.cursor = 'crosshair';
+                alert("제품이 포함되도록 넉넉하게 드래그하세요. 내부 객체의 실제 윤곽선 모양대로 ROI가 자석처럼 달라붙습니다.");
+            });
+            document.getElementById('btn-reset-roi').addEventListener('click', () => {
+                const ch = ach();
+                ch.roi = { x:0, y:0, w:ch.canvas.width, h:ch.canvas.height };
+                ch.roiMode = 'rect';
+                if (ch.roiMask) { ch.roiMask.delete(); ch.roiMask = null; }
+                ch.roiContours = [];
+            });
+            document.getElementById('btn-save-settings').addEventListener('click', () => { saveSettings(); alert("설정이 로컬에 저장되었습니다."); });
+        }
+
+        // P01-F: 채널별 canvas ROI 이벤트 바인딩
+        function bindCanvasEvents(ch) {
+            const canvas = ch.canvas;
+            function onMouseDown(e) {
+                if (!ch.isDrawingMode) return;
+                const rect = canvas.getBoundingClientRect();
+                ch.dragStart = getMousePos(e, rect, ch);
+                ch.isDrawingROI = true;
+            }
+            function onMouseMove(e) {
+                if (!ch.isDrawingROI) return;
+                const rect = canvas.getBoundingClientRect();
+                const pos = getMousePos(e, rect, ch);
+                ch.mouseX = pos.x; ch.mouseY = pos.y;
+            }
+            function onMouseUp(e) {
+                if (!ch.isDrawingROI) return;
+                const rect = canvas.getBoundingClientRect();
+                const pos = getMousePos(e, rect, ch);
+                let tempRoi = {
+                    x: Math.min(ch.dragStart.x, pos.x), y: Math.min(ch.dragStart.y, pos.y),
+                    w: Math.max(1, Math.abs(pos.x - ch.dragStart.x)), h: Math.max(1, Math.abs(pos.y - ch.dragStart.y))
+                };
+                ch.isDrawingROI = false; ch.isDrawingMode = null; canvas.style.cursor = 'default';
+                if (ch.roiDrawingType === 'auto') {
+                    extractSmartContour(ch, tempRoi);
+                } else {
+                    ch.roi = tempRoi; ch.roiMode = 'rect';
+                    if (ch.roiMask) { ch.roiMask.delete(); ch.roiMask = null; }
+                }
+            }
+            canvas.addEventListener('mousedown', onMouseDown);
+            canvas.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('mouseup',   onMouseUp);
+            ch._canvasHandlers = { onMouseDown, onMouseMove, onMouseUp };
+        }
+        function unbindCanvasEvents(ch) {
+            if (!ch._canvasHandlers) return;
+            const { onMouseDown, onMouseMove, onMouseUp } = ch._canvasHandlers;
+            ch.canvas.removeEventListener('mousedown', onMouseDown);
+            ch.canvas.removeEventListener('mousemove', onMouseMove);
+            ch.canvas.removeEventListener('mouseup',   onMouseUp);
+            ch._canvasHandlers = null;
+        }
+
+        function processBarcodeInput(ch, full, extracted) {
+            ch = ch || ach();
+            const statusEl = document.getElementById('barcode-match-status');
+            if (!extracted) { statusEl.textContent = '코드 길이 부족'; statusEl.style.color = '#ff9800'; return; }
+
+            ch.currentBarcodeFull = full;
+            ch.currentBarcodeCode = extracted;
+            ch.waitingForResult = true;
+            ch.inspectionResultLogged = false;
+            ch.currentResultIsOK = false;
+            ch.ignoreOkUntilRemoved = false;
+
+            const matchedKeys = Object.keys(ch.masterFileRegistry).filter(k => k === extracted || k.startsWith(extracted+'_') || k.startsWith(extracted+'-'));
+
+            function _resetAndStart() {
+                if (ch.isCameraOn && ch.masterMat && ch.masterMat.cols > 0) {
+                    ch.lastInspectedSimilarity = -1; ch.lastIsOK = null; ch.inspectThrottle = 0;
+                    ch.trackingPoint.found = false; ch.isInspecting = true;
+                    ch.stableFrames = 0; ch.continuousOkFrames = 0; ch.isFrozen = false;
+                    if (ch.id === activeChannelId) {
+                        document.getElementById('btn-inspect-mode').innerText = "검사 중지";
+                        document.getElementById('btn-inspect-mode').style.background = "var(--ng-color)";
+                        document.getElementById('result-display').innerText = "SEARCHING...";
+                        document.getElementById('result-display').className = "result-box search";
+                    }
+                }
+            }
+
+            if (matchedKeys.length > 0) {
+                statusEl.textContent = `✅ 매칭됨: ${extracted} (${matchedKeys.length}장)`;
+                statusEl.style.color = '#00e676';
+                if (ch.masterMats) ch.masterMats.forEach(m => { if (m.mat) m.mat.delete(); if (m.mask) m.mask.delete(); });
+                ch.masterMats = [];
+                let loadedCount = 0;
+
+                matchedKeys.forEach(key => {
+                    const entry = ch.masterFileRegistry[key];
+                    const img = new Image();
+                    img.onload = function() {
+                        let currentRoi, currentMode = entry.roiMode||'rect', currentContours = entry.roiContours?[...entry.roiContours]:[], currentMask = null;
+                        if (entry.savedRoi && entry.savedRoi.w > 0 && entry.savedRoi.h > 0) {
+                            currentRoi = { ...entry.savedRoi };
+                            if (currentMode === 'auto_contour' && currentContours.length > 0) {
+                                try {
+                                    currentMask = cv.Mat.zeros(currentRoi.h, currentRoi.w, cv.CV_8UC1);
+                                    let pts = currentContours.flatMap(p => [p.x-currentRoi.x, p.y-currentRoi.y]);
+                                    let oc = cv.matFromArray(pts.length/2,1,cv.CV_32SC2,pts); let mv = new cv.MatVector(); mv.push_back(oc);
+                                    cv.drawContours(currentMask, mv, 0, new cv.Scalar(255), -1, cv.LINE_8, new cv.Mat(), 0);
+                                    oc.delete(); mv.delete();
+                                } catch(e) { console.error("ROI 마스크 복원 에러:", e); }
+                            }
+                        } else {
+                            let camW = ch.canvas.width||640, camH = ch.canvas.height||480;
+                            currentRoi = { x:Math.max(0,Math.round((camW-img.width)/2)), y:Math.max(0,Math.round((camH-img.height)/2)), w:img.width, h:img.height };
+                        }
+                        const tc = document.createElement('canvas');
+                        tc.width = currentRoi.w; tc.height = currentRoi.h;
+                        tc.getContext('2d').drawImage(img, 0, 0, currentRoi.w, currentRoi.h);
+                        let tMat = cv.imread(tc), mMat = new cv.Mat();
+                        cv.cvtColor(tMat, mMat, cv.COLOR_RGBA2GRAY);
+                        cv.GaussianBlur(mMat, mMat, new cv.Size(5,5), 0); tMat.delete();
+                        let dlArr = computeDLEmbedding(tc);
+                        ch.masterMats.push({ mat:mMat, mask:currentMask, roiMode:currentMode, roi:currentRoi, roiContours:currentContours, dlEmbedding:dlArr, masterObj:entry });
+
+                        loadedCount++;
+                        if (loadedCount === matchedKeys.length) {
+                            if (ch.id === activeChannelId) document.getElementById('master-img-preview').src = ch.masterFileRegistry[matchedKeys[0]].dataURL;
+                            ch.masterImageDataURL = ch.masterFileRegistry[matchedKeys[0]].dataURL;
+                            if (ch.masterMat) ch.masterMat.delete();
+                            ch.masterMat = ch.masterMats[0].mat.clone();
+                            ch.roi = ch.masterMats[0].roi; ch.roiMode = ch.masterMats[0].roiMode;
+                            if (ch.roiMask) ch.roiMask.delete();
+                            ch.roiMask = ch.masterMats[0].mask ? ch.masterMats[0].mask.clone() : null;
+                            ch.roiContours = ch.masterMats[0].roiContours;
+                            _resetAndStart();
+                        }
+                    };
+                    img.src = entry.dataURL;
+                });
+            } else {
+                statusEl.textContent = '❌ 미등록: ' + extracted;
+                statusEl.style.color = '#f44336';
+                _resetAndStart();
+            }
+
+            setTimeout(() => {
+                document.getElementById('barcode-input').value = '';
+                document.getElementById('barcode-fullval').textContent = '전체값: -';
+                document.getElementById('barcode-extracted').textContent = '-';
+            }, 1500);
+        }
+
+        // --- 10. 자석 윤곽선 추출 (Auto Contour ROI) ---
+        function extractSmartContour(ch, rect) {
+            ch = ch || ach();
+            let wasInspecting = ch.isInspecting;
+            ch.isInspecting = false; ch.isFrozen = false;
+
+            if (ch.masterMats) { ch.masterMats.forEach(m => { if (m.mat) m.mat.delete(); if (m.mask) m.mask.delete(); }); ch.masterMats = []; }
+
+            let rx = Math.max(0, Math.round(rect.x));
+            let ry = Math.max(0, Math.round(rect.y));
+            if (rx >= ch.canvas.width || ry >= ch.canvas.height) {
+                alert("ROI 지정 영역이 카메라 화면을 벗어났습니다. 다시 드래그해주세요.");
+                if (wasInspecting) ch.isInspecting = true;
+                return;
+            }
+            let rw = Math.max(1, Math.min(Math.round(rect.w), ch.canvas.width  - rx));
+            let rh = Math.max(1, Math.min(Math.round(rect.h), ch.canvas.height - ry));
+
+            let cleanCanvas = document.createElement('canvas');
+            cleanCanvas.width  = ch.canvas.width;
+            cleanCanvas.height = ch.canvas.height;
+            let cleanCtx = cleanCanvas.getContext('2d');
+            cleanCtx.save();
+            cleanCtx.translate(cleanCanvas.width/2, cleanCanvas.height/2);
+            if (ch.flipH) cleanCtx.scale(-1, 1);
+            cleanCtx.rotate(ch.cameraAngle * Math.PI / 180);
+            cleanCtx.drawImage(ch.video, -ch.video.videoWidth/2, -ch.video.videoHeight/2, ch.video.videoWidth, ch.video.videoHeight);
+            cleanCtx.restore();
+
+            let src = cv.imread(cleanCanvas);
+            let roiMat = src.roi(new cv.Rect(rx, ry, rw, rh));
+            let gray = new cv.Mat();
+            cv.cvtColor(roiMat, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
+            let edges = new cv.Mat();
+            cv.Canny(gray, edges, 50, 150, 3, false);
+            let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5,5));
+            cv.dilate(edges, edges, M, new cv.Point(-1,-1), 2);
+            cv.erode(edges,  edges, M, new cv.Point(-1,-1), 2);
+            let contours = new cv.MatVector(), hierarchy = new cv.Mat();
+            cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let maxArea = -1, maxCntIdx = -1;
+            for (let i = 0; i < contours.size(); ++i) {
+                let area = cv.contourArea(contours.get(i));
+                if (area > maxArea) { maxArea = area; maxCntIdx = i; }
+            }
+
+            if (maxCntIdx !== -1 && maxArea > 50) {
+                let cnt = contours.get(maxCntIdx);
+                let bRect = cv.boundingRect(cnt);
+                let finalRoi = { x: rx+bRect.x, y: ry+bRect.y, w: bRect.width, h: bRect.height };
+                let points = [];
+                let cntData = cnt.data32S;
+                for (let j=0; j<cntData.length; j+=2) points.push({ x: rx+cntData[j], y: ry+cntData[j+1] });
+
+                let mask = cv.Mat.zeros(finalRoi.h, finalRoi.w, cv.CV_8UC1);
+                let offsetCnt = cnt.clone();
+                let ox = rx - finalRoi.x, oy = ry - finalRoi.y;
+                for (let k=0; k<offsetCnt.rows; k++) { offsetCnt.data32S[k*2]+=ox; offsetCnt.data32S[k*2+1]+=oy; }
+                let mContours = new cv.MatVector(); mContours.push_back(offsetCnt);
+                cv.drawContours(mask, mContours, 0, new cv.Scalar(255), -1, cv.LINE_8, hierarchy, 0);
+                if (ch.roiMask) ch.roiMask.delete();
+                ch.roiMask = mask; ch.roiContours = points; ch.roi = finalRoi; ch.roiMode = 'auto_contour';
+                offsetCnt.delete(); mContours.delete();
+            } else {
+                alert("선택 영역 내에서 뚜렷한 외곽선을 찾지 못했습니다. 일반 사각형 ROI로 설정됩니다.");
+                ch.roi = { x:rx, y:ry, w:rw, h:rh }; ch.roiMode = 'rect';
+                if (ch.roiMask) { ch.roiMask.delete(); ch.roiMask = null; }
+            }
+
+            src.delete(); roiMat.delete(); gray.delete(); edges.delete(); M.delete(); contours.delete(); hierarchy.delete();
+            if (wasInspecting) ch.isInspecting = true;
+        }
+
+    </script>
+</body>
+</html>

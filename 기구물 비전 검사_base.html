@@ -1,0 +1,2370 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>웹 기반 실시간 비전 검사 시스템</title>
+    <!-- 외부 라이브러리 로드 -->
+    <script async src="https://docs.opencv.org/4.8.0/opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <style>
+        /* CSS: 제조 현장용 Dark UI 디자인 */
+        :root {
+            --bg-color: #1e1e1e;
+            --panel-bg: #2d2d2d;
+            --text-color: #e0e0e0;
+            --accent-color: #007acc;
+            --ok-color: #4caf50;
+            --ng-color: #f44336;
+            --border-color: #444;
+        }
+
+        body {
+            margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color); color: var(--text-color);
+            display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+        }
+
+        /* 상단 헤더 */
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 20px; background-color: #111; border-bottom: 2px solid var(--border-color);
+        }
+        .header-title { font-size: 1.5rem; font-weight: bold; color: var(--accent-color); }
+        .header-status { display: flex; gap: 20px; align-items: center; font-size: 0.9rem; }
+        .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: gray; }
+        .status-dot.active { background: var(--ok-color); box-shadow: 0 0 8px var(--ok-color); }
+
+        /* 메인 레이아웃 */
+        .container { display: flex; flex: 1; overflow: hidden; }
+        .panel { background-color: var(--panel-bg); padding: 15px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 15px; overflow-y: auto; }
+        .left-panel { width: 300px; }
+        .center-panel { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #000; position: relative; }
+        .right-panel { width: 350px; }
+
+        /* 컴포넌트 스타일 */
+        h3 { margin: 0 0 10px 0; font-size: 1.1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .control-group { display: flex; flex-direction: column; gap: 8px; }
+        label { font-size: 0.85rem; color: #aaa; }
+        select, input[type="text"], input[type="file"], button { 
+            background: #333; color: white; border: 1px solid #555; padding: 8px; border-radius: 4px; font-size: 0.9rem; 
+        }
+        button { cursor: pointer; transition: background 0.2s; font-weight: bold; }
+        button:hover { background: var(--accent-color); }
+        button.danger:hover { background: var(--ng-color); }
+
+        /* 카메라/캔버스 영역 */
+        #video-container { position: relative; width: 100%; max-width: 800px; aspect-ratio: 4/3; }
+        video { width: 100%; height: 100%; object-fit: contain; background: #000; display: none; }
+        canvas.view-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; cursor: crosshair; }
+        
+        /* 결과 UI */
+        .result-box { text-align: center; padding: 20px; border-radius: 8px; font-size: 2rem; font-weight: bold; background: #222; }
+        .result-box.ok { color: var(--ok-color); border: 2px solid var(--ok-color); box-shadow: 0 0 15px rgba(76, 175, 80, 0.3); }
+        .result-box.ng { color: var(--ng-color); border: 2px solid var(--ng-color); box-shadow: 0 0 15px rgba(244, 67, 54, 0.3); animation: flash 0.5s; }
+        .result-box.search { color: #ffeb3b; border: 2px solid #ffeb3b; box-shadow: 0 0 15px rgba(255, 235, 59, 0.3); }
+        
+        @keyframes flash {
+            0% { background-color: rgba(244, 67, 54, 0.5); }
+            100% { background-color: #222; }
+        }
+
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+        .stat-item { background: #333; padding: 10px; border-radius: 4px; text-align: center; }
+        .stat-value { font-size: 1.2rem; font-weight: bold; margin-top: 5px; color: var(--accent-color); }
+
+        #master-img-preview { width: 100%; height: 150px; background: #111; object-fit: contain; border: 1px dashed #666; }
+        .chart-container { width: 100%; height: 200px; margin-top: 10px; }
+        
+        #loading-overlay {
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.8); display: flex; justify-content: center; align-items: center;
+            font-size: 1.5rem; color: white; z-index: 1000; flex-direction: column; gap: 10px;
+        }
+        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid var(--accent-color); border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* 바코드 입력 정보창 */
+        .barcode-panel {
+            background: #1a2a1a; border: 1px solid #2e7d32; border-radius: 6px; padding: 10px;
+        }
+        .barcode-input-wrap { display: flex; gap: 6px; align-items: center; }
+        #barcode-input {
+            flex: 1; background: #111; color: #00e676; border: 1px solid #2e7d32;
+            padding: 8px; border-radius: 4px; font-size: 1rem; font-family: monospace; letter-spacing: 1px;
+        }
+        #barcode-input:focus { outline: none; border-color: #00e676; box-shadow: 0 0 6px rgba(0,230,118,0.4); }
+        .barcode-info-row { display: flex; justify-content: space-between; font-size: 0.78rem; margin-top: 6px; color: #888; }
+        .barcode-extracted { color: #ffeb3b; font-weight: bold; font-family: monospace; font-size: 0.9rem; }
+
+        /* 폴더 지정 패널 */
+        .folder-panel {
+            background: #1a1a2e; border: 1px solid #3949ab; border-radius: 6px; padding: 10px;
+        }
+        .folder-status {
+            font-size: 0.78rem; margin-top: 6px; padding: 6px 8px; background: #111;
+            border-radius: 4px; border: 1px solid #333; color: #888; word-break: break-all;
+            min-height: 28px; line-height: 1.4;
+        }
+        .folder-registry-count {
+            font-size: 0.78rem; color: #7986cb; margin-top: 4px; text-align: right;
+        }
+        #btn-folder-pick {
+            background: #3949ab; border-color: #5c6bc0;
+        }
+        #btn-folder-pick:hover { background: #5c6bc0; }
+        #folder-file-input { display: none; }
+
+        /* 등록 양품 목록 */
+        .registry-list {
+            max-height: 160px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;
+            margin-top: 4px;
+        }
+        .registry-item {
+            display: flex; align-items: center; gap: 6px;
+            background: #1e1e2e; border: 1px solid #3949ab; border-radius: 4px;
+            padding: 5px 8px; font-size: 0.78rem;
+        }
+        .registry-item img {
+            width: 36px; height: 28px; object-fit: contain; background: #111;
+            border: 1px solid #333; border-radius: 2px; flex-shrink: 0;
+        }
+        .registry-item-name {
+            flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #ccc;
+        }
+        .registry-item-del {
+            background: #b71c1c; border: none; color: #fff; border-radius: 3px;
+            padding: 2px 7px; cursor: pointer; font-size: 0.75rem; flex-shrink: 0;
+        }
+        .registry-item-del:hover { background: #f44336; }
+
+        /* 양품 저장 / OK 바코드 모달 공통 */
+        .custom-modal {
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.75); z-index: 2000; justify-content: center; align-items: center;
+        }
+        .custom-modal.show { display: flex; }
+        .modal-box {
+            background: #2d2d2d; border: 1px solid var(--accent-color); border-radius: 10px;
+            padding: 24px; width: 380px; display: flex; flex-direction: column; gap: 14px;
+        }
+        .modal-box h3 { margin: 0; color: var(--accent-color); }
+        .modal-box label { font-size: 0.85rem; color: #aaa; }
+        .modal-box input[type="text"] { width: 100%; box-sizing: border-box; font-size: 1rem; padding: 10px; }
+        .modal-actions { display: flex; gap: 10px; }
+        .modal-actions button { flex: 1; padding: 10px; font-size: 0.95rem; }
+        .btn-confirm { background: var(--ok-color) !important; }
+        .btn-cancel { background: #555 !important; }
+        .modal-preview { width: 100%; height: 120px; object-fit: contain; background: #111; border: 1px dashed #555; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <!-- 로딩 오버레이 -->
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <div id="loading-text">OpenCV.js 및 라이브러리 로드 중...</div>
+    </div>
+
+    <!-- 상단 헤더 -->
+    <header>
+        <div class="header-title">AI Vision Inspection System</div>
+        <div class="header-status">
+            <div><span id="time-display">00:00:00</span></div>
+            <div>FPS: <span id="fps-display">0</span></div>
+            <div>OpenCV <span id="cv-status" class="status-dot"></span></div>
+            <div>Camera <span id="cam-status" class="status-dot"></span></div>
+        </div>
+    </header>
+
+    <!-- 메인 컨텐츠 -->
+    <div class="container">
+        <!-- 좌측: 설정 및 ROI -->
+        <div class="panel left-panel">
+            <h3>카메라 설정</h3>
+            <div class="control-group">
+                <label>카메라 선택</label>
+                <select id="camera-select"></select>
+                <button id="btn-start-cam">카메라 연결</button>
+                <label style="display:flex; align-items:center; gap:5px; color:white; font-size:0.85rem; cursor:pointer; margin-top:5px;">
+                    <input type="checkbox" id="chk-flip-h" style="width:16px; height:16px;"> 화면 좌우 반전
+                </label>
+                <label style="display:flex; align-items:center; gap:5px; color:white; font-size:0.85rem; cursor:pointer;">
+                    카메라 회전:
+                    <select id="camera-angle" style="flex:1; background:#222; color:#fff; border:1px solid #555; padding:4px;">
+                        <option value="0">0° (기본)</option>
+                        <option value="90">90°</option>
+                        <option value="180">180°</option>
+                        <option value="270">270°</option>
+                    </select>
+                </label>
+            </div>
+
+            <h3>기준 양품(Master) 설정</h3>
+            <div class="control-group">
+                <input type="file" id="master-upload" accept="image/*">
+                <img id="master-img-preview" alt="양품 이미지 없음">
+                <button id="btn-set-master">현재 화면을 양품으로 등록</button>
+            </div>
+
+            <h3>바코드 리더기</h3>
+            <div class="barcode-panel control-group">
+                <label>모델 입력 (5~14번째 자리 자동 추출)</label>
+                <div class="barcode-input-wrap">
+                    <input type="text" id="barcode-input" placeholder="바코드를 스캔하세요..." autocomplete="off">
+                </div>
+                <div class="barcode-info-row">
+                    <span>추출 코드: <span id="barcode-extracted" class="barcode-extracted">-</span></span>
+                    <span id="barcode-match-status" style="color:#888;">대기중</span>
+                </div>
+                <div id="barcode-fullval" style="font-size:0.75rem;color:#666;margin-top:2px;word-break:break-all;">전체값: -</div>
+            </div>
+
+            <h3>양품 폴더 지정</h3>
+            <div class="folder-panel control-group">
+                <label>양품 이미지 폴더를 선택하면 바코드 코드로 자동 매칭됩니다</label>
+                <input type="file" id="folder-file-input" accept="image/*" multiple webkitdirectory>
+                <button id="btn-folder-pick">📂 양품 폴더 선택</button>
+                <div class="folder-status" id="folder-status">폴더가 지정되지 않았습니다.</div>
+                <div class="folder-registry-count" id="folder-registry-count">등록된 양품: 0 개</div>
+                <div class="registry-list" id="registry-list"></div>
+            </div>
+
+            <h3>OK 이미지 저장 폴더</h3>
+            <div class="folder-panel control-group">
+                <label>OK 판정 시 이미지가 자동 저장될 폴더를 지정합니다</label>
+                <input type="file" id="ok-folder-file-input" style="display:none" webkitdirectory>
+                <button id="btn-ok-folder-pick">📂 저장 폴더 선택</button>
+                <div class="folder-status" id="ok-folder-status" style="color:#888;">폴더가 지정되지 않았습니다.<br><span style="font-size:0.72rem;color:#666;">※ 미지정 시 브라우저 기본 다운로드 폴더에 저장됩니다.</span></div>
+            </div>
+
+            <h3>검사 조건 설정</h3>
+            <div class="control-group">
+                <label>형상/표면 유사도 합격 기준 (%)</label>
+                <input type="range" id="threshold-sim" min="50" max="100" value="95" oninput="document.getElementById('sim-val').innerText = this.value + '%'; saveSettings();">
+                <span id="sim-val" style="text-align:right; font-size: 0.9rem;">95%</span>
+                
+                <!-- 딥러닝 AI 검사 조건 -->
+                <label style="display:flex; align-items:center; gap:5px; color:#a5b4fc; font-size:0.85rem; cursor:pointer; margin-top:10px;">
+                    <input type="checkbox" id="chk-dl-enable" style="width:16px; height:16px;" onchange="saveSettings();"> 딥러닝(AI) 교차 판정 활성화
+                </label>
+                <div id="dl-status" style="font-size:0.75rem; color:#888; text-align:right; margin-top:-5px;">(모델 로드 대기중...)</div>
+                <label>AI 특징 유사도 합격 기준 (%)</label>
+                <input type="range" id="threshold-dl-sim" min="50" max="100" value="90" oninput="document.getElementById('dl-sim-val').innerText = this.value + '%'; saveSettings();">
+                <span id="dl-sim-val" style="text-align:right; font-size: 0.9rem; color:#a5b4fc;">90%</span>
+
+                <label style="margin-top:10px;">이진화(Threshold) 값</label>
+                <input type="range" id="threshold-bin" min="0" max="255" value="50" oninput="saveSettings();">
+            </div>
+
+            <h3>ROI 설정</h3>
+            <div class="control-group">
+                <button id="btn-draw-rect-roi">사각형 ROI 그리기</button>
+                <button id="btn-draw-auto-roi" style="background: #9c27b0;">자석 윤곽선 ROI 그리기</button>
+                <button id="btn-reset-roi" class="danger">ROI 초기화</button>
+                <div style="font-size: 0.8rem; color: #888;">화면을 드래그하여 검사 영역을 지정하세요.</div>
+            </div>
+            
+            <button id="btn-inspect-mode" style="background: var(--ok-color); margin-top: auto; padding: 15px;">검사 시작 (연속 모드)</button>
+        </div>
+
+        <!-- 중앙: 실시간 영상 및 오버레이 -->
+        <div class="panel center-panel">
+            <div id="video-container">
+                <video id="webcam" autoplay playsinline muted></video>
+                <!-- 화면 표시용 캔버스 -->
+                <canvas id="output-canvas" class="view-canvas"></canvas>
+            </div>
+        </div>
+
+        <!-- 우측: 결과 및 통계 -->
+        <div class="panel right-panel">
+            <h3>검사 결과 판정</h3>
+            <div id="result-display" class="result-box">WAIT</div>
+            
+            <div class="stats-grid">
+                <div class="stat-item">유사도(CV)<div id="val-sim" class="stat-value">0%</div></div>
+                <div class="stat-item" style="border:1px solid #3949ab;">유사도(AI)<div id="val-dl-sim" class="stat-value" style="color:#a5b4fc;">-</div></div>
+                <div class="stat-item">처리속도<div id="val-time" class="stat-value">0ms</div></div>
+                <div class="stat-item">검사수량<div id="val-total" class="stat-value">0</div></div>
+                <div class="stat-item" style="color:var(--ok-color)">OK 수량<div id="val-ok" class="stat-value">0</div></div>
+                <div class="stat-item" style="color:var(--ng-color)">NG 수량<div id="val-ng" class="stat-value">0</div></div>
+                <div class="stat-item" style="grid-column: span 2;">양품률<div id="val-rate" class="stat-value">0%</div></div>
+            </div>
+
+            <h3>검사 통계 그래프</h3>
+            <div class="chart-container">
+                <canvas id="stats-chart"></canvas>
+            </div>
+
+            <h3 style="margin-top:10px;">로그 관리</h3>
+            <div class="control-group">
+                <button id="btn-reset-stats" class="danger">🗑️ 기록 초기화</button>
+                <button id="btn-export-csv">검사 이력 XLSX 다운로드</button>
+                <button id="btn-save-settings">현재 설정 JSON 저장</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 양품 저장 모달 -->
+    <div id="save-master-modal" class="custom-modal">
+        <div class="modal-box">
+            <h3>📁 양품 이미지 저장</h3>
+            <img id="modal-preview-img" class="modal-preview" alt="저장할 양품 이미지">
+            <div id="modal-folder-hint" style="font-size:0.8rem; padding:6px 8px; background:#1a1a2e; border:1px solid #3949ab; border-radius:4px; color:#7986cb; display:none;">
+                💡 저장 후 양품 폴더에 복사하면 바코드 자동 매칭됩니다.
+            </div>
+            <div>
+                <label>저장 파일명 (확장자 제외)</label>
+                <input type="text" id="master-save-filename" placeholder="예: part_A_front_001" autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-confirm" id="btn-modal-save">💾 PNG로 저장</button>
+                <button class="btn-cancel" id="btn-modal-cancel">취소</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- OK 바코드 입력 모달 -->
+    <div id="ok-barcode-modal" class="custom-modal">
+        <div class="modal-box">
+            <h3 style="color: var(--ok-color);">✅ OK 판정 - 자동 저장 완료</h3>
+            <div style="font-size: 0.85rem; color: #ccc; margin-bottom: 5px;">
+                양품으로 판정되어 이미지가 저장되었습니다.<br>
+                <b>다음 제품의 바코드</b>를 스캔해주세요.<br>
+                <span style="font-size: 0.75rem; color: #888;">(스캔이 감지되면 자동으로 다음 검사가 시작됩니다.)</span>
+            </div>
+            <div>
+                <input type="text" id="ok-barcode-input" placeholder="바코드 스캔 대기 중..." autocomplete="off">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-confirm" id="btn-ok-barcode-save">확인 및 시작</button>
+                <button class="btn-cancel" id="btn-ok-barcode-cancel">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- 글로벌 변수 상태 관리 ---
+        const state = {
+            isOpenCvReady: false,
+            isCameraOn: false,
+            isInspecting: false,
+            masterMat: null,          
+            masterMats: [],           
+            roi: { x: 0, y: 0, w: 0, h: 0 },
+            roiMode: 'rect',     
+            roiMask: null,       
+            roiContours: [],     
+            isDrawingMode: null, 
+            isDrawingROI: false,
+            dragStart: null,
+            mouseX: 0,
+            mouseY: 0,
+            trackingPoint: { x: 0, y: 0, found: false }, 
+            stats: { total: 0, ok: 0, ng: 0, history: [] },
+            lastFrameTime: 0,
+            fps: 0,
+            
+            cameraAngle: 0, 
+            
+            stableFrames: 0,
+            continuousOkFrames: 0, 
+            lastMatchX: -1,
+            lastMatchY: -1,
+            
+            isFrozen: false, 
+            
+            masterSaveDirHandle: null,   
+            masterImageDataURL: null,    
+            masterFileRegistry: {},      
+            barcodeBuffer: '',           
+            barcodeDebounceTimer: null,  
+            selectedFolderName: null,    
+            
+            currentBarcodeFull: null, 
+            currentBarcodeCode: null, 
+            currentSerialBarcode: null, 
+
+            inspectionResultLogged: false,
+            currentResultIsOK: false,    
+            ignoreOkUntilRemoved: false, 
+
+            waitingForResult: false,     
+
+            okSaveDirHandle: null,       
+            okSaveFolderName: null,
+            capturedOkBlob: null,
+
+            // 딥러닝 모델 상태
+            dlModel: null,
+            isDlReady: false
+        };
+
+        const video = document.getElementById('webcam');
+        const outCanvas = document.getElementById('output-canvas');
+        const ctx = outCanvas.getContext('2d', { willReadFrequently: true });
+        let chartInstance = null;
+        let animationId = null;
+
+        function onOpenCvReady() {
+            cv['onRuntimeInitialized'] = () => {
+                document.getElementById('cv-status').classList.add('active');
+                document.getElementById('loading-overlay').style.display = 'none';
+                state.isOpenCvReady = true;
+                initSystem();
+            }
+        }
+
+        async function initSystem() {
+            updateTime();
+            setInterval(updateTime, 1000);
+            await getCameras();
+            initChart();
+            setupEventListeners();
+            loadSettings(); 
+            
+            if (typeof mobilenet !== 'undefined') {
+                mobilenet.load({version: 2, alpha: 1.0}).then(model => {
+                    state.dlModel = model;
+                    state.isDlReady = true;
+                    let el = document.getElementById('dl-status');
+                    if(el) {
+                        el.innerText = "(모델 로드 완료)";
+                        el.style.color = "#00e676";
+                    }
+                }).catch(err => {
+                    console.error("TFJS Model load error:", err);
+                    let el = document.getElementById('dl-status');
+                    if(el) {
+                        el.innerText = "(로드 실패)";
+                        el.style.color = "#f44336";
+                    }
+                });
+            }
+        }
+
+        async function getCameras() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                const select = document.getElementById('camera-select');
+                select.innerHTML = '';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${index + 1}`;
+                    select.appendChild(option);
+                });
+            } catch (err) {
+                console.error("카메라를 찾을 수 없습니다.", err);
+            }
+        }
+        
+        function computeDLEmbedding(canvas) {
+            if (!state.isDlReady || !state.dlModel) return null;
+            try {
+                let tensor = tf.browser.fromPixels(canvas);
+                let embedding = state.dlModel.infer(tensor, true);
+                let arr = Array.from(embedding.dataSync());
+                tensor.dispose();
+                embedding.dispose();
+                return arr;
+            } catch(e) {
+                console.warn("DL Embedding failed", e);
+                return null;
+            }
+        }
+
+        function cosineSimilarity(a, b) {
+            if (!a || !b || a.length !== b.length) return 0;
+            let dotProduct = 0, normA = 0, normB = 0;
+            for (let i = 0; i < a.length; i++) {
+                dotProduct += a[i] * b[i];
+                normA += Math.pow(a[i], 2);
+                normB += Math.pow(b[i], 2);
+            }
+            if (normA === 0 || normB === 0) return 0;
+            return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+        }
+
+        function applyCameraDimensions() {
+            if (!video.videoWidth) return;
+            const w = video.videoWidth;
+            const h = video.videoHeight;
+            if (state.cameraAngle === 90 || state.cameraAngle === 270) {
+                outCanvas.width = h;
+                outCanvas.height = w;
+            } else {
+                outCanvas.width = w;
+                outCanvas.height = h;
+            }
+            
+            if (state.roi.w === 0) {
+                state.roi = { x: 0, y: 0, w: outCanvas.width, h: outCanvas.height };
+            } else {
+                state.roi.x = Math.max(0, Math.min(state.roi.x, outCanvas.width - 1));
+                state.roi.y = Math.max(0, Math.min(state.roi.y, outCanvas.height - 1));
+                state.roi.w = Math.max(1, Math.min(state.roi.w, outCanvas.width - state.roi.x));
+                state.roi.h = Math.max(1, Math.min(state.roi.h, outCanvas.height - state.roi.y));
+            }
+        }
+
+        async function startCamera() {
+            const deviceId = document.getElementById('camera-select').value;
+            const constraints = {
+                video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: 640 }, height: { ideal: 480 } }
+            };
+
+            try {
+                if (video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                }
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                
+                video.onloadedmetadata = async () => {
+                    await video.play();
+                    applyCameraDimensions();
+                    document.getElementById('cam-status').classList.add('active');
+                    state.isCameraOn = true;
+                    if(animationId) cancelAnimationFrame(animationId);
+                    processVideo(); 
+                };
+            } catch (err) {
+                alert("카메라 권한을 확인해주세요.");
+                console.error(err);
+            }
+        }
+
+        const FPS_INTERVAL = 1000 / 30; 
+
+        function processVideo() {
+            if (!state.isCameraOn) return;
+            if (outCanvas.width === 0 || outCanvas.height === 0) {
+                animationId = requestAnimationFrame(processVideo);
+                return;
+            }
+            
+            try {
+                const now = performance.now();
+                const elapsed = now - state.lastFrameTime;
+
+                if (elapsed > FPS_INTERVAL) {
+                    state.fps = Math.round(1000 / elapsed);
+                    document.getElementById('fps-display').innerText = state.fps;
+                    state.lastFrameTime = now - (elapsed % FPS_INTERVAL);
+
+                    const startTime = performance.now();
+                    
+                    if (!state.isFrozen) {
+                        ctx.save();
+                        ctx.clearRect(0, 0, outCanvas.width, outCanvas.height);
+                        ctx.translate(outCanvas.width / 2, outCanvas.height / 2);
+                        
+                        if (document.getElementById('chk-flip-h').checked) {
+                            ctx.scale(-1, 1);
+                        }
+                        ctx.rotate(state.cameraAngle * Math.PI / 180);
+                        ctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+                        ctx.restore();
+                    } else {
+                        // isFrozen 중에도 영상은 계속 그리되 검사만 스킵
+                        ctx.save();
+                        ctx.clearRect(0, 0, outCanvas.width, outCanvas.height);
+                        ctx.translate(outCanvas.width / 2, outCanvas.height / 2);
+                        if (document.getElementById('chk-flip-h').checked) ctx.scale(-1, 1);
+                        ctx.rotate(state.cameraAngle * Math.PI / 180);
+                        ctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+                        ctx.restore();
+                        drawOverlay();
+                        animationId = requestAnimationFrame(processVideo);
+                        return;
+                    }
+                        
+                    if (state.isInspecting && ((state.masterMats && state.masterMats.length > 0) || (state.masterMat && state.masterMat.cols > 0))) {
+                        performInspection();
+                    }
+
+                    drawOverlay();
+
+                    const endTime = performance.now();
+                    if(state.isInspecting && state.trackingPoint.found && state.stableFrames >= 5 && !state.isFrozen) {
+                        document.getElementById('val-time').innerText = Math.round(endTime - startTime) + 'ms';
+                    }
+                }
+            } catch (error) {
+                let errMsg = error.message || "알 수 없는 오류";
+                if (typeof error === 'number' && typeof cv !== 'undefined' && cv.exceptionFromPtr) {
+                    errMsg = cv.exceptionFromPtr(error).msg;
+                }
+                console.error("비전 처리 중 시스템 오류 발생:", error, errMsg);
+                
+                if (state.isInspecting) {
+                    toggleInspectMode(); 
+                    alert("시스템 에러로 검사가 중지되었습니다.\n\n[에러 내역]\n" + errMsg);
+                }
+            }
+            
+            animationId = requestAnimationFrame(processVideo);
+        }
+
+        // --- 4. 양품/불량 판정 (다중 템플릿 매칭 & 딥러닝 AI 검사 적용) ---
+        function performInspection() {
+            if ((!state.masterMats || state.masterMats.length === 0) && (!state.masterMat || state.masterMat.cols <= 0)) {
+                throw new Error("기준 양품 이미지가 비어있습니다. 새로 등록해주세요.");
+            }
+
+            let src = new cv.Mat(outCanvas.height, outCanvas.width, cv.CV_8UC4);
+            src.data.set(ctx.getImageData(0, 0, outCanvas.width, outCanvas.height).data);
+            
+            let graySrc = new cv.Mat();
+            cv.cvtColor(src, graySrc, cv.COLOR_RGBA2GRAY);
+
+            let blurredSrc = new cv.Mat();
+            cv.GaussianBlur(graySrc, blurredSrc, new cv.Size(5, 5), 0);
+
+            const mastersToCheck = (state.masterMats && state.masterMats.length > 0) 
+                ? state.masterMats 
+                : [{ mat: state.masterMat, mask: state.roiMask, roiMode: state.roiMode, roi: state.roi, roiContours: state.roiContours }];
+
+            let bestMatch = null;
+            let bestSim = -1;
+
+            for (let i = 0; i < mastersToCheck.length; i++) {
+                let mObj = mastersToCheck[i];
+                let mMat = mObj.mat;
+
+                if (!mMat || mMat.cols <= 0 || mMat.rows <= 0) continue;
+
+                let matchX = 0, matchY = 0;
+                let mW = mMat.cols, mH = mMat.rows;
+                let shapeScore = 100;
+                let isMatched = false;
+
+                // ── ROI 위치 직접 비교 방식 ──────────────────────────────
+                // savedRoi(카메라 좌표계 기준)가 있으면 해당 위치를 바로 잘라서 비교
+                // matchTemplate 탐색을 하지 않으므로 ROI 크기에 무관하게 항상 동작
+                const roi = mObj.roi;
+                if (roi && roi.w > 0 && roi.h > 0) {
+                    // ROI를 캔버스 범위 안으로 클램핑
+                    const rx = Math.max(0, Math.min(Math.round(roi.x), blurredSrc.cols - 1));
+                    const ry = Math.max(0, Math.min(Math.round(roi.y), blurredSrc.rows - 1));
+                    const rw = Math.max(1, Math.min(Math.round(roi.w), blurredSrc.cols - rx));
+                    const rh = Math.max(1, Math.min(Math.round(roi.h), blurredSrc.rows - ry));
+
+                    // mMat 크기와 현재 ROI 크기가 다르면 리사이즈해서 비교
+                    let roiPatch = blurredSrc.roi(new cv.Rect(rx, ry, rw, rh));
+                    let comparePatch = new cv.Mat();
+                    if (rw !== mW || rh !== mH) {
+                        cv.resize(roiPatch, comparePatch, new cv.Size(mW, mH), 0, 0, cv.INTER_LINEAR);
+                    } else {
+                        roiPatch.copyTo(comparePatch);
+                    }
+                    roiPatch.delete();
+
+                    // shapeScore: 정규화 상관계수로 계산
+                    try {
+                        let tResult = new cv.Mat();
+                        cv.matchTemplate(comparePatch, mMat, tResult, cv.TM_CCOEFF_NORMED);
+                        let mm = cv.minMaxLoc(tResult);
+                        shapeScore = Math.max(0, mm.maxVal * 100);
+                        tResult.delete();
+                    } catch(e) {
+                        shapeScore = 50; // 계산 실패 시 중간값
+                    }
+
+                    matchX = rx;
+                    matchY = ry;
+                    mW = rw;
+                    mH = rh;
+                    isMatched = true;
+
+                    // diff 계산 (mMat과 크기 맞춤)
+                    let diff = new cv.Mat();
+                    cv.absdiff(mMat, comparePatch, diff);
+                    comparePatch.delete();
+
+                    if (mObj.roiMode === 'auto_contour' && mObj.mask) {
+                        let maskResized = new cv.Mat();
+                        if (diff.cols !== mObj.mask.cols || diff.rows !== mObj.mask.rows) {
+                            cv.resize(mObj.mask, maskResized, new cv.Size(diff.cols, diff.rows), 0, 0, cv.INTER_NEAREST);
+                        } else {
+                            mObj.mask.copyTo(maskResized);
+                        }
+                        let maskedDiff = new cv.Mat();
+                        cv.bitwise_and(diff, maskResized, maskedDiff);
+                        diff.delete(); maskResized.delete();
+                        diff = maskedDiff;
+                    }
+
+                    let threshVal = parseInt(document.getElementById('threshold-bin').value);
+                    let thresh = new cv.Mat();
+                    cv.threshold(diff, thresh, threshVal, 255, cv.THRESH_BINARY);
+
+                    let nonZero = cv.countNonZero(thresh);
+                    let totalPixels = mW * mH;
+                    if (mObj.roiMode === 'auto_contour' && mObj.mask) {
+                        let maskForCount = new cv.Mat();
+                        if (diff.cols !== mObj.mask.cols || diff.rows !== mObj.mask.rows) {
+                            cv.resize(mObj.mask, maskForCount, new cv.Size(diff.cols, diff.rows), 0, 0, cv.INTER_NEAREST);
+                        } else {
+                            mObj.mask.copyTo(maskForCount);
+                        }
+                        totalPixels = cv.countNonZero(maskForCount);
+                        maskForCount.delete();
+                    }
+                    if (totalPixels <= 0) totalPixels = 1;
+
+                    let differenceRatio = (nonZero / totalPixels) * 100;
+                    let pixelSurfaceScore = Math.max(0, 100 - (differenceRatio * 2));
+                    let finalSim = Math.min(pixelSurfaceScore, shapeScore);
+
+                    diff.delete();
+
+                    if (finalSim > bestSim) {
+                        bestSim = finalSim;
+                        if (bestMatch && bestMatch.thresh) bestMatch.thresh.delete();
+                        bestMatch = {
+                            mX: matchX, mY: matchY, mW, mH,
+                            matchRect: new cv.Rect(matchX, matchY, mW, mH),
+                            shapeMatchScore: shapeScore,
+                            pixelSurfaceScore,
+                            finalSimilarity: finalSim,
+                            thresh,
+                            masterObj: mObj
+                        };
+                    } else {
+                        thresh.delete();
+                    }
+
+                } else {
+                    // ── ROI 정보 없는 경우: 기존 matchTemplate 전체 탐색 ─────
+                    if (mMat.cols > blurredSrc.cols || mMat.rows > blurredSrc.rows) continue;
+
+                    let result = new cv.Mat();
+                    try {
+                        cv.matchTemplate(blurredSrc, mMat, result, cv.TM_CCOEFF_NORMED);
+                        let minMax = cv.minMaxLoc(result);
+                        if (minMax.maxVal >= 0.15) {
+                            shapeScore = minMax.maxVal * 100;
+                            matchX = minMax.maxPoint.x;
+                            matchY = minMax.maxPoint.y;
+                            isMatched = true;
+                        }
+                    } catch(e) {}
+                    finally { if(result) result.delete(); }
+
+                    if (isMatched) {
+                        matchX = Math.max(0, Math.min(matchX, blurredSrc.cols - mW));
+                        matchY = Math.max(0, Math.min(matchY, blurredSrc.rows - mH));
+
+                        let matchRect = new cv.Rect(matchX, matchY, mW, mH);
+                        let matchedRoi = blurredSrc.roi(matchRect);
+                        let diff = new cv.Mat();
+                        cv.absdiff(mMat, matchedRoi, diff);
+                        matchedRoi.delete();
+
+                        if (mObj.roiMode === 'auto_contour' && mObj.mask && diff.cols === mObj.mask.cols && diff.rows === mObj.mask.rows) {
+                            let maskedDiff = new cv.Mat();
+                            cv.bitwise_and(diff, mObj.mask, maskedDiff);
+                            diff.delete(); diff = maskedDiff;
+                        }
+
+                        let threshVal = parseInt(document.getElementById('threshold-bin').value);
+                        let thresh = new cv.Mat();
+                        cv.threshold(diff, thresh, threshVal, 255, cv.THRESH_BINARY);
+                        diff.delete();
+
+                        let nonZero = cv.countNonZero(thresh);
+                        let totalPixels = mW * mH;
+                        if (totalPixels <= 0) totalPixels = 1;
+
+                        let differenceRatio = (nonZero / totalPixels) * 100;
+                        let pixelSurfaceScore = Math.max(0, 100 - (differenceRatio * 2));
+                        let finalSim = Math.min(pixelSurfaceScore, shapeScore);
+
+                        if (finalSim > bestSim) {
+                            bestSim = finalSim;
+                            if (bestMatch && bestMatch.thresh) bestMatch.thresh.delete();
+                            bestMatch = { mX: matchX, mY: matchY, mW, mH, matchRect, shapeMatchScore: shapeScore, pixelSurfaceScore, finalSimilarity: finalSim, thresh, masterObj: mObj };
+                        } else {
+                            thresh.delete();
+                        }
+                    }
+                }
+            }
+
+            if (!bestMatch) {
+                state.trackingPoint.found = false;
+                document.getElementById('result-display').innerText = "SEARCHING...";
+                document.getElementById('result-display').className = "result-box search";
+                document.getElementById('val-sim').innerText = "0%";
+                document.getElementById('val-dl-sim').innerText = "-";
+                src.delete(); graySrc.delete(); blurredSrc.delete();
+                
+                // [수정] 1:1 바코드 모드가 아닐 때만 로그 리셋
+                if (!state.waitingForResult) {
+                    state.inspectionResultLogged = false;
+                    state.currentResultIsOK = false;
+                }
+                state.ignoreOkUntilRemoved = false; 
+                state.stableFrames = 0; 
+                state.continuousOkFrames = 0; 
+
+                return;
+            }
+
+            let matchX = bestMatch.mX;
+            let matchY = bestMatch.mY;
+            let matchW = bestMatch.mW;
+            let matchH = bestMatch.mH;
+            let shapeMatchScore = bestMatch.shapeMatchScore;
+            let pixelSurfaceScore = bestMatch.pixelSurfaceScore;
+            let finalSimilarity = bestMatch.finalSimilarity.toFixed(1);
+            let thresh = bestMatch.thresh;
+
+            if (state.masterMats && state.masterMats.length > 0) {
+                state.roi = bestMatch.masterObj.roi;
+                state.roiMode = bestMatch.masterObj.roiMode;
+                state.roiContours = bestMatch.masterObj.roiContours || [];
+            }
+
+            // ROI 고정 방식: 위치가 항상 동일하므로 stableFrames 즉시 증가
+            const positionStable = !bestMatch.masterObj.roi ||
+                (Math.abs(matchX - state.lastMatchX) < 30 && Math.abs(matchY - state.lastMatchY) < 30);
+            if (positionStable) {
+                state.stableFrames++;
+            } else {
+                state.stableFrames = Math.max(0, state.stableFrames - 1); // 급격한 위치 변화 시 점진적 감소
+            }
+            state.lastMatchX = matchX;
+            state.lastMatchY = matchY;
+
+            state.trackingPoint = { x: matchX, y: matchY, found: true };
+
+            if (state.stableFrames < 5) { 
+                document.getElementById('result-display').innerText = "STABILIZING...";
+                document.getElementById('result-display').className = "result-box search";
+                document.getElementById('val-sim').innerText = "...";
+                document.getElementById('val-dl-sim').innerText = "...";
+                src.delete(); graySrc.delete(); blurredSrc.delete(); thresh.delete();
+                return; 
+            }
+
+            let isDlActive = document.getElementById('chk-dl-enable').checked && state.isDlReady;
+            let dlSimScore = 100;
+            
+            if (isDlActive && bestMatch.masterObj && bestMatch.masterObj.dlEmbedding) {
+                let colorRoi = src.roi(bestMatch.matchRect);
+                let tCanvas = document.createElement('canvas');
+                tCanvas.width = matchW;
+                tCanvas.height = matchH;
+                cv.imshow(tCanvas, colorRoi);
+                
+                let currentDlEmbedding = computeDLEmbedding(tCanvas);
+                if (currentDlEmbedding) {
+                    let cosSim = cosineSimilarity(currentDlEmbedding, bestMatch.masterObj.dlEmbedding);
+                    dlSimScore = Math.max(0, cosSim * 100);
+                }
+                colorRoi.delete();
+            }
+
+            document.getElementById('val-sim').innerText = finalSimilarity + '%';
+            if (isDlActive) {
+                document.getElementById('val-dl-sim').innerText = dlSimScore.toFixed(1) + '%';
+            } else {
+                document.getElementById('val-dl-sim').innerText = '-';
+            }
+
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+            cv.findContours(thresh, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+            
+            for (let i = 0; i < contours.size(); ++i) {
+                let cnt = contours.get(i);
+                let area = cv.contourArea(cnt);
+                if(area > 50) {
+                    let rectMatch = cv.boundingRect(cnt);
+                    ctx.strokeStyle = '#f44336';
+                    ctx.lineWidth = 2;
+                    let drawX = matchX + rectMatch.x;
+                    let drawY = matchY + rectMatch.y;
+                    ctx.strokeRect(drawX, drawY, rectMatch.width, rectMatch.height);
+                    drawTextUpright('NG', drawX, Math.max(15, drawY - 5), '#f44336', 'bold 13px sans-serif');
+                }
+                cnt.delete();
+            }
+
+            if (shapeMatchScore < parseFloat(document.getElementById('threshold-sim').value) && pixelSurfaceScore > shapeMatchScore) {
+                drawTextUpright('SHAPE MISMATCH!', matchX, Math.max(30, matchY - 15), '#f44336', 'bold 24px sans-serif');
+            }
+
+            let dlThreshold = parseFloat(document.getElementById('threshold-dl-sim').value);
+            if (isDlActive && dlSimScore < dlThreshold) {
+                ctx.strokeStyle = '#f44336';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(matchX, matchY, matchW, matchH);
+                drawTextUpright('AI NG!', matchX, Math.max(55, matchY - 35), '#f44336', 'bold 24px sans-serif');
+            }
+
+            let passThreshold = parseFloat(document.getElementById('threshold-sim').value);
+            let isOK = (parseFloat(finalSimilarity) >= passThreshold);
+            
+            if (isDlActive && dlSimScore < dlThreshold) {
+                isOK = false;
+            }
+            
+            if (isOK) {
+                state.continuousOkFrames++;
+            } else {
+                state.continuousOkFrames = 0; 
+            }
+
+            // [수정] 2단계: 0.8초 (30 FPS 기준 24프레임) 유지 확인
+            if (isOK && state.continuousOkFrames < 24) { 
+                document.getElementById('result-display').innerText = "CHECKING...";
+                document.getElementById('result-display').className = "result-box search";
+            } else {
+                updateResult(isOK, finalSimilarity);
+            }
+
+            src.delete(); graySrc.delete(); blurredSrc.delete(); thresh.delete(); contours.delete(); hierarchy.delete();
+        }
+
+        // --- 5. 결과 UI 업데이트 및 로깅 ---
+        let inspectThrottle = 0;
+        let lastInspectedSimilarity = -1;
+        let lastIsOK = null;
+
+        function updateStatsUI() {
+            const rate = state.stats.total > 0 ? ((state.stats.ok / state.stats.total) * 100).toFixed(1) : '0.0';
+            document.getElementById('val-total').innerText = state.stats.total;
+            document.getElementById('val-ok').innerText   = state.stats.ok;
+            document.getElementById('val-ng').innerText   = state.stats.ng;
+            document.getElementById('val-rate').innerText = rate + '%';
+            updateChart(rate);
+            saveSettings();
+        }
+
+        function logHistory(result, similarity, serial = null) {
+            const ts = new Date();
+            state.stats.history.push({
+                time:       ts.toLocaleString('ko-KR'),
+                barcode:    state.currentBarcodeFull  || '-',
+                code:       serial || state.currentBarcodeCode || '-',
+                result:     result,
+                similarity: similarity
+            });
+            saveSettings();
+        }
+
+        function updateResult(isOK, similarity) {
+            const now = Date.now();
+            const simValue = parseFloat(similarity);
+
+            // 화면 표시 스로틀 (500ms) - 카운트 로직과 분리
+            const shouldUpdateDisplay = (now - inspectThrottle >= 300) ||
+                                        (lastIsOK !== isOK) ||
+                                        (Math.abs(simValue - lastInspectedSimilarity) >= 2.0);
+
+            if (shouldUpdateDisplay) {
+                inspectThrottle = now;
+                lastInspectedSimilarity = simValue;
+                lastIsOK = isOK;
+
+                const box = document.getElementById('result-display');
+                if (isOK) {
+                    box.className = 'result-box ok';
+                    box.innerText = 'OK (양품)';
+                } else {
+                    box.className = 'result-box ng';
+                    box.innerText = 'NG (불량)';
+                }
+            }
+
+            // [수정] 3단계: OK 판정 (기록 갱신, 수량 카운트)
+            if (isOK) {
+                if (state.ignoreOkUntilRemoved) return; 
+
+                if (!state.inspectionResultLogged) {
+                    state.inspectionResultLogged = true;
+                    state.currentResultIsOK = true;
+                    
+                    state.stats.total++;
+                    state.stats.ok++;
+                    updateStatsUI();
+                    
+                    promptOkBarcode(similarity, false);
+                } else if (!state.currentResultIsOK) {
+                    state.currentResultIsOK = true;
+                    
+                    state.stats.ng--;
+                    state.stats.ok++;
+                    updateStatsUI();
+                    
+                    promptOkBarcode(similarity, true); 
+                }
+            } else {
+                if (!state.inspectionResultLogged) {
+                    state.inspectionResultLogged = true;
+                    state.currentResultIsOK = false;
+                    
+                    state.stats.total++;
+                    state.stats.ng++;
+                    updateStatsUI();
+                    
+                    logHistory('NG', similarity);
+                }
+            }
+        }
+
+        // [수정] 4단계: OK 판정 이미지 저장 후 5단계: 다음 바코드 팝업창 띄우기
+        function promptOkBarcode(similarity, isUpgrade) {
+            state.isFrozen = true; 
+            state.currentSerialBarcode = null;
+            
+            document.getElementById('btn-inspect-mode').innerText = "이미지 자동 저장 중...";
+            document.getElementById('btn-inspect-mode').style.background = "var(--ok-color)";
+            
+            // OK 판정 확정 시점의 화면을 즉시 촬영하고 저장
+            outCanvas.toBlob(async (blob) => {
+                state.capturedOkBlob = blob;
+                
+                if (isUpgrade) {
+                    if (state.stats.history.length > 0) {
+                        const last = state.stats.history[state.stats.history.length - 1];
+                        last.result = 'OK';
+                        last.similarity = similarity;
+                        last.time = new Date().toLocaleString('ko-KR');
+                    }
+                } else {
+                    logHistory('OK', similarity, state.currentBarcodeFull); 
+                }
+                
+                // 4단계: 이미지 파일 저장
+                await savePassImage();
+                
+                // 5단계: 다음 바코드 입력 팝업창 표시 (대기)
+                document.getElementById('btn-inspect-mode').innerText = "다음 검사 대기 중";
+                document.getElementById('ok-barcode-modal').classList.add('show');
+                const input = document.getElementById('ok-barcode-input');
+                input.value = '';
+                setTimeout(() => input.focus(), 100);
+
+            }, 'image/jpeg', 0.92);
+        }
+
+        async function savePassImage() {
+            try {
+                const ts = new Date();
+                const dateStr =
+                    ts.getFullYear().toString() +
+                    String(ts.getMonth() + 1).padStart(2, '0') +
+                    String(ts.getDate()).padStart(2, '0');
+                const timeStr =
+                    String(ts.getHours()).padStart(2, '0') +
+                    String(ts.getMinutes()).padStart(2, '0') +
+                    String(ts.getSeconds()).padStart(2, '0');
+                
+                const barcodeVal = (state.currentSerialBarcode || state.currentBarcodeFull || 'PASS').replace(/[\/\\:*?"<>|]/g, '_');
+                const fileName = `${barcodeVal}_${dateStr}_${timeStr}.jpg`;
+
+                // 바코드 스캔 시점이 아닌, 미리 촬영해 둔 OK 시점의 이미지 사용
+                let blob = state.capturedOkBlob;
+                if (!blob) {
+                    blob = await new Promise(resolve => outCanvas.toBlob(resolve, 'image/jpeg', 0.92));
+                }
+
+                if (state.okSaveDirHandle) {
+                    try {
+                        const fileHandle = await state.okSaveDirHandle.getFileHandle(fileName, { create: true });
+                        const writable = await fileHandle.createWritable();
+                        await writable.write(blob);
+                        await writable.close();
+                        state.capturedOkBlob = null; // 저장 완료 후 초기화
+                        return; 
+                    } catch (fsErr) {
+                        console.warn('지정 폴더 저장 실패:', fsErr);
+                    }
+                }
+
+                const dataURL = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = dataURL;
+                link.download = fileName;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                setTimeout(() => URL.revokeObjectURL(dataURL), 1000);
+                
+                state.capturedOkBlob = null; // 저장 완료 후 초기화
+            } catch(e) {
+                console.warn('OK 이미지 자동 저장 실패:', e);
+                state.capturedOkBlob = null;
+            }
+        }
+
+        // --- 6. ROI 영역 및 오버레이 그리기 ---
+        function drawTextUpright(text, x, y, style, font) {
+            ctx.save();
+            ctx.font = font || '14px sans-serif';
+            ctx.fillStyle = style || '#fff';
+            ctx.fillText(text, x, y);
+            ctx.restore();
+        }
+
+        function drawOverlay() {
+            const tracking = state.isInspecting && state.trackingPoint.found;
+
+            let drawW = state.roi.w;
+            let drawH = state.roi.h;
+            if (state.masterMats && state.masterMats.length > 0) {
+                drawW = state.roi.w;
+                drawH = state.roi.h;
+            } else if (state.masterMat) {
+                drawW = state.masterMat.cols;
+                drawH = state.masterMat.rows;
+            }
+
+            if (tracking) {
+                const drawX = state.trackingPoint.x;
+                const drawY = state.trackingPoint.y;
+
+                ctx.strokeStyle = '#00e676';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(drawX, drawY, drawW, drawH);
+                drawTextUpright('Tracking ROI', drawX, Math.max(15, drawY - 5), '#00e676', 'bold 14px sans-serif');
+
+            } else if (state.roiMode === 'auto_contour' && state.roiContours && state.roiContours.length > 0) {
+                ctx.beginPath();
+                ctx.moveTo(state.roiContours[0].x, state.roiContours[0].y);
+                for(let i = 1; i < state.roiContours.length; i++) {
+                    ctx.lineTo(state.roiContours[i].x, state.roiContours[i].y);
+                }
+                ctx.closePath();
+                ctx.strokeStyle = '#9c27b0';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+
+                ctx.strokeStyle = 'rgba(156, 39, 176, 0.3)';
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(state.roi.x, state.roi.y, state.roi.w, state.roi.h);
+                ctx.setLineDash([]);
+                drawTextUpright('Auto Contour ROI', state.roi.x, Math.max(15, state.roi.y - 5), '#9c27b0', 'bold 14px sans-serif');
+
+            } else {
+                const isSearching = state.isInspecting && !state.trackingPoint.found;
+                ctx.strokeStyle = isSearching ? '#ffeb3b' : '#007acc';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(state.roi.x, state.roi.y, state.roi.w, state.roi.h);
+                drawTextUpright(
+                    isSearching ? 'SEARCHING...' : 'Inspection ROI',
+                    state.roi.x, Math.max(15, state.roi.y - 5),
+                    isSearching ? '#ffeb3b' : '#007acc',
+                    '14px sans-serif'
+                );
+            }
+
+            if (state.isDrawingROI && state.dragStart) {
+                ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
+                ctx.setLineDash([5, 5]);
+                let w = state.mouseX - state.dragStart.x;
+                let h = state.mouseY - state.dragStart.y;
+                ctx.strokeRect(state.dragStart.x, state.dragStart.y, w, h);
+                ctx.setLineDash([]);
+            }
+        }
+
+        function toggleInspectMode() {
+            const btnInspect = document.getElementById('btn-inspect-mode');
+            state.isInspecting = !state.isInspecting;
+            if(state.isInspecting) {
+                lastInspectedSimilarity = -1;
+                lastIsOK = null;
+                inspectThrottle = 0;   // ← 스로틀 리셋
+                state.trackingPoint.found = false;
+                state.stableFrames = 0; 
+                state.continuousOkFrames = 0; 
+                state.isFrozen = false; 
+
+                state.waitingForResult = false; 
+                state.inspectionResultLogged = false;
+                state.currentResultIsOK = false;
+
+                btnInspect.innerText = "검사 중지";
+                btnInspect.style.background = "var(--ng-color)";
+                document.getElementById('result-display').innerText = "SEARCHING...";
+                document.getElementById('result-display').className = "result-box search";
+            } else {
+                state.trackingPoint.found = false;
+                state.isFrozen = false; 
+                btnInspect.innerText = "검사 시작 (연속 모드)";
+                btnInspect.style.background = "var(--ok-color)";
+                document.getElementById('result-display').innerText = "WAIT";
+                document.getElementById('result-display').className = "result-box";
+            }
+        }
+
+        // --- 7. 기준 양품(Master) 등록 로직 ---
+        function setMasterImage() {
+            if(!state.isCameraOn) { alert("카메라를 먼저 연결해주세요."); return; }
+            if(state.roi.w === 0 || state.roi.h === 0) { alert("ROI 영역을 설정해주세요."); return; }
+
+            let wasInspecting = state.isInspecting;
+            state.isInspecting = false;
+            state.isFrozen = false; 
+
+            let rx = Math.max(0, Math.round(state.roi.x));
+            let ry = Math.max(0, Math.round(state.roi.y));
+            if (rx >= outCanvas.width) rx = 0;
+            if (ry >= outCanvas.height) ry = 0;
+
+            let rw = Math.max(1, Math.min(Math.round(state.roi.w), outCanvas.width - rx));
+            let rh = Math.max(1, Math.min(Math.round(state.roi.h), outCanvas.height - ry));
+            state.roi = { x: rx, y: ry, w: rw, h: rh };
+
+            let cleanCanvas = document.createElement('canvas');
+            cleanCanvas.width = outCanvas.width;
+            cleanCanvas.height = outCanvas.height;
+            let cleanCtx = cleanCanvas.getContext('2d');
+            
+            cleanCtx.save();
+            cleanCtx.translate(cleanCanvas.width / 2, cleanCanvas.height / 2);
+            if (document.getElementById('chk-flip-h').checked) {
+                cleanCtx.scale(-1, 1);
+            }
+            cleanCtx.rotate(state.cameraAngle * Math.PI / 180);
+            cleanCtx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+            cleanCtx.restore();
+
+            let src = cv.imread(cleanCanvas);
+            let rect = new cv.Rect(state.roi.x, state.roi.y, state.roi.w, state.roi.h);
+            let roiSrc = src.roi(rect);
+            
+            if (state.masterMat) {
+                state.masterMat.delete();
+            }
+            state.masterMat = new cv.Mat();
+            
+            cv.cvtColor(roiSrc, state.masterMat, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(state.masterMat, state.masterMat, new cv.Size(5, 5), 0);
+
+            let tempCanvas = document.createElement('canvas');
+            tempCanvas.width = state.roi.w;
+            tempCanvas.height = state.roi.h;
+            tempCanvas.getContext('2d').drawImage(cleanCanvas, state.roi.x, state.roi.y, state.roi.w, state.roi.h, 0, 0, state.roi.w, state.roi.h);
+            const dataURL = tempCanvas.toDataURL('image/png');
+            document.getElementById('master-img-preview').src = dataURL;
+
+            state.masterImageDataURL = dataURL;
+            src.delete(); roiSrc.delete();
+            
+            let embeddingArray = computeDLEmbedding(tempCanvas);
+            
+            // 기존 다중 마스터 지우고 단일 배열 생성
+            if (state.masterMats) {
+                state.masterMats.forEach(m => {
+                    if (m.mat) m.mat.delete();
+                    if (m.mask) m.mask.delete();
+                });
+            }
+            state.masterMats = [];
+            state.masterMats.push({ 
+                mat: state.masterMat.clone(), 
+                mask: state.roiMask ? state.roiMask.clone() : null, 
+                roiMode: state.roiMode, 
+                roi: { ...state.roi }, 
+                roiContours: [...state.roiContours],
+                dlEmbedding: embeddingArray
+            });
+
+            if (wasInspecting) state.isInspecting = true;
+            
+            openSaveMasterModal(dataURL);
+        }
+
+        function openSaveMasterModal(dataURL) {
+            document.getElementById('modal-preview-img').src = dataURL;
+            document.getElementById('master-save-filename').value = '';
+            const hint = document.getElementById('modal-folder-hint');
+            if (state.selectedFolderName) {
+                hint.innerHTML = `✅ 저장 시 <b style="color:#a5b4fc">[${state.selectedFolderName}]</b> 에 자동 등록됩니다. 바코드 스캔으로 즉시 불러올 수 있습니다.`;
+                hint.style.display = 'block';
+            } else {
+                hint.innerHTML = `💡 양품 폴더를 먼저 지정하면 저장 즉시 바코드 자동 매칭이 가능합니다.`;
+                hint.style.display = 'block';
+                hint.style.color = '#888';
+            }
+            document.getElementById('save-master-modal').classList.add('show');
+            setTimeout(() => document.getElementById('master-save-filename').focus(), 100);
+        }
+
+        function closeSaveMasterModal() {
+            document.getElementById('save-master-modal').classList.remove('show');
+        }
+
+        async function saveMasterImageFile() {
+            const rawName = document.getElementById('master-save-filename').value.trim();
+            if (!rawName) { alert("파일명을 입력해주세요."); document.getElementById('master-save-filename').focus(); return; }
+            const safeName = rawName.replace(/[\/\\:*?"<>|]/g, '_');
+            const dataURL = state.masterImageDataURL;
+            if (!dataURL) { alert("저장할 이미지가 없습니다."); return; }
+
+            state.masterFileRegistry[safeName] = {
+                dataURL: dataURL,
+                savedRoi: { ...state.roi },      
+                roiMode: state.roiMode,
+                roiContours: state.roiContours ? [...state.roiContours] : []
+            };
+            updateFolderRegistryCount();
+            saveSettings(); 
+
+            let savedDirectly = false;
+
+            if (state.masterSaveDirHandle) {
+                try {
+                    const res = await fetch(dataURL);
+                    const blob = await res.blob();
+                    const fileHandle = await state.masterSaveDirHandle.getFileHandle(safeName + '.png', { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    savedDirectly = true;
+                } catch (err) {
+                    console.warn('폴더 직접 저장 실패 (권한 만료 등). 다운로드로 대체합니다.', err);
+                }
+            }
+
+            if (!savedDirectly) {
+                const link = document.createElement('a');
+                link.href = dataURL;
+                link.download = safeName + '.png';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+
+            if (state.selectedFolderName) {
+                document.getElementById('folder-status').innerHTML =
+                    `<span style="color:#7986cb">📁 ${state.selectedFolderName}</span><br>` +
+                    `<span style="color:#00e676">✅ "${safeName}" 등록됨 (총 ${Object.keys(state.masterFileRegistry).length}개)</span>`;
+            }
+
+            closeSaveMasterModal();
+            alert(`✅ "${safeName}.png" 저장 완료!\n바코드 코드 [${safeName}] 인식 시 자동 양품 등록됩니다.`);
+        }
+
+        function renderRegistryList() {
+            const count = Object.keys(state.masterFileRegistry).length;
+            document.getElementById('folder-registry-count').textContent = `등록된 양품: ${count} 개`;
+
+            const list = document.getElementById('registry-list');
+            list.innerHTML = '';
+            Object.keys(state.masterFileRegistry).forEach(name => {
+                const entry = state.masterFileRegistry[name];
+                const item = document.createElement('div');
+                item.className = 'registry-item';
+
+                const thumb = document.createElement('img');
+                thumb.src = entry.dataURL;
+                thumb.alt = name;
+
+                const label = document.createElement('span');
+                label.className = 'registry-item-name';
+                label.textContent = name;
+                label.title = name;
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'registry-item-del';
+                delBtn.textContent = '삭제';
+                delBtn.onclick = () => {
+                    if (!confirm(`"${name}" 양품을 삭제하겠습니까?`)) return;
+                    delete state.masterFileRegistry[name];
+                    saveSettings();
+                    renderRegistryList();
+                };
+
+                item.appendChild(thumb);
+                item.appendChild(label);
+                item.appendChild(delBtn);
+                list.appendChild(item);
+            });
+        }
+
+        function updateFolderRegistryCount() { renderRegistryList(); }
+
+        const SETTINGS_KEY = 'vision_inspector_settings_v1';
+
+        function saveSettings() {
+            try {
+                const data = {
+                    thresholdSim: document.getElementById('threshold-sim').value,
+                    thresholdBin: document.getElementById('threshold-bin').value,
+                    selectedFolderName: state.selectedFolderName,
+                    okSaveFolderName: state.okSaveFolderName,
+                    registry: state.masterFileRegistry,
+                    stats: state.stats,
+                    statsDate: new Date().toLocaleDateString(),
+                    flipH: document.getElementById('chk-flip-h').checked,
+                    cameraAngle: state.cameraAngle,
+                    dlEnable: document.getElementById('chk-dl-enable').checked,
+                    thresholdDlSim: document.getElementById('threshold-dl-sim').value
+                };
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(data));
+            } catch(e) {
+                console.warn('설정 저장 실패(용량 초과 가능):', e);
+            }
+        }
+
+        function loadSettings() {
+            try {
+                const raw = localStorage.getItem(SETTINGS_KEY);
+                if (!raw) return;
+                const data = JSON.parse(raw);
+
+                if (data.thresholdSim !== undefined) {
+                    document.getElementById('threshold-sim').value = data.thresholdSim;
+                    document.getElementById('sim-val').innerText = data.thresholdSim + '%';
+                }
+                if (data.thresholdBin !== undefined) {
+                    document.getElementById('threshold-bin').value = data.thresholdBin;
+                }
+                if (data.cameraAngle !== undefined) {
+                    state.cameraAngle = data.cameraAngle;
+                    document.getElementById('camera-angle').value = data.cameraAngle;
+                }
+                if (data.flipH !== undefined) {
+                    document.getElementById('chk-flip-h').checked = data.flipH;
+                }
+                if (data.dlEnable !== undefined) {
+                    document.getElementById('chk-dl-enable').checked = data.dlEnable;
+                }
+                if (data.thresholdDlSim !== undefined) {
+                    document.getElementById('threshold-dl-sim').value = data.thresholdDlSim;
+                    document.getElementById('dl-sim-val').innerText = data.thresholdDlSim + '%';
+                }
+
+                if (data.selectedFolderName) {
+                    state.selectedFolderName = data.selectedFolderName;
+                    document.getElementById('folder-status').innerHTML =
+                        `<span style="color:#7986cb">📁 ${data.selectedFolderName}</span><br>` +
+                        `<span style="color:#888;font-size:0.72rem;">※ 보안상 재시작 시 폴더 권한 부여를 위해 다시 선택해주세요</span>`;
+                }
+                if (data.okSaveFolderName) {
+                    state.okSaveFolderName = data.okSaveFolderName;
+                    document.getElementById('ok-folder-status').innerHTML =
+                        `<span style="color:#ffeb3b">📁 ${data.okSaveFolderName}</span><br>` +
+                        `<span style="font-size:0.72rem;color:#888;">※ 재시작 시 저장 폴더 권한을 다시 선택해주세요</span>`;
+                }
+
+                if (data.registry && typeof data.registry === 'object') {
+                    state.masterFileRegistry = data.registry;
+                    renderRegistryList();
+                }
+
+                if (data.stats && data.statsDate) {
+                    const today = new Date().toLocaleDateString();
+                    if (data.statsDate === today) {
+                        state.stats = data.stats;
+                        document.getElementById('val-total').innerText = state.stats.total;
+                        document.getElementById('val-ok').innerText = state.stats.ok;
+                        document.getElementById('val-ng').innerText = state.stats.ng;
+                        const rate = state.stats.total > 0 ? ((state.stats.ok / state.stats.total) * 100).toFixed(1) : '0.0';
+                        document.getElementById('val-rate').innerText = rate + '%';
+                    } else {
+                        state.stats = { total: 0, ok: 0, ng: 0, history: [] };
+                        saveSettings();
+                    }
+                }
+            } catch(e) {
+                console.warn('설정 복원 실패:', e);
+            }
+        }
+
+        function initChart() {
+            const ctxChart = document.getElementById('stats-chart').getContext('2d');
+            chartInstance = new Chart(ctxChart, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '양품률(%)',
+                        data: [],
+                        borderColor: '#4caf50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        tension: 0.3,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { min: 0, max: 100, grid: { color: '#444' }, ticks: { color: '#ccc' } },
+                        x: { grid: { color: '#444' }, ticks: { color: '#ccc' } }
+                    },
+                    plugins: { legend: { labels: { color: '#fff' } } }
+                }
+            });
+        }
+
+        function updateChart(rate) {
+            const now = new Date().toLocaleTimeString('ko-KR', { hour12: false, hour: "numeric", minute: "numeric", second: "numeric" });
+            if (chartInstance.data.labels.length > 20) {
+                chartInstance.data.labels.shift();
+                chartInstance.data.datasets[0].data.shift();
+            }
+            chartInstance.data.labels.push(now);
+            chartInstance.data.datasets[0].data.push(rate);
+            chartInstance.update();
+        }
+
+        function updateTime() {
+            document.getElementById('time-display').innerText = new Date().toLocaleString();
+        }
+
+        function downloadXLSX() {
+            if (state.stats.history.length === 0) { alert("저장할 데이터가 없습니다."); return; }
+
+            const headers = ['검사일시', '모델 바코드', '시리얼 바코드', '판정결과', '유사도(%)'];
+            const rows = state.stats.history.map(e => [e.time, e.barcode, e.code, e.result, e.similarity]);
+
+            const wsData = [headers, ...rows];
+            const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+            ws['!cols'] = [{ wch: 22 }, { wch: 20 }, { wch: 20 }, { wch: 10 }, { wch: 12 }];
+
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, '검사이력');
+
+            const summary = [
+                ['검사 요약'],
+                ['총 검사수량', state.stats.total],
+                ['OK 수량',     state.stats.ok],
+                ['NG 수량',     state.stats.ng],
+                ['양품률(%)',   state.stats.total > 0 ? ((state.stats.ok / state.stats.total)*100).toFixed(1) : '0.0'],
+                ['저장일시',    new Date().toLocaleString('ko-KR')]
+            ];
+            const ws2 = XLSX.utils.aoa_to_sheet(summary);
+            ws2['!cols'] = [{ wch: 16 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(wb, ws2, '요약');
+
+            const ts = new Date();
+            const fname = `검사이력_${ts.getFullYear()}${String(ts.getMonth()+1).padStart(2,'0')}${String(ts.getDate()).padStart(2,'0')}_${String(ts.getHours()).padStart(2,'0')}${String(ts.getMinutes()).padStart(2,'0')}.xlsx`;
+            XLSX.writeFile(wb, fname);
+        }
+
+        function getMousePos(e, rect) {
+            let rawX = e.clientX - rect.left;
+            let rawY = e.clientY - rect.top;
+            if (document.getElementById('chk-flip-h').checked) {
+                rawX = rect.width - rawX; 
+            }
+            return {
+                x: Math.round(rawX * (outCanvas.width / rect.width)),
+                y: Math.round(rawY * (outCanvas.height / rect.height))
+            };
+        }
+
+        function setupEventListeners() {
+            document.getElementById('btn-start-cam').addEventListener('click', startCamera);
+            document.getElementById('btn-set-master').addEventListener('click', setMasterImage);
+
+            document.getElementById('chk-flip-h').addEventListener('change', (e) => {
+                saveSettings();
+            });
+
+            document.getElementById('camera-angle').addEventListener('change', (e) => {
+                state.cameraAngle = parseInt(e.target.value);
+                applyCameraDimensions();
+                saveSettings();
+            });
+
+            document.getElementById('btn-reset-stats').addEventListener('click', () => {
+                if(!confirm("오늘의 검사 기록 및 카운트를 모두 초기화하시겠습니까?")) return;
+                state.stats = { total: 0, ok: 0, ng: 0, history: [] };
+                saveSettings();
+                document.getElementById('val-total').innerText = '0';
+                document.getElementById('val-ok').innerText = '0';
+                document.getElementById('val-ng').innerText = '0';
+                document.getElementById('val-rate').innerText = '0.0%';
+                document.getElementById('val-dl-sim').innerText = '-';
+                
+                chartInstance.data.labels = [];
+                chartInstance.data.datasets[0].data = [];
+                chartInstance.update();
+            });
+
+            document.getElementById('btn-ok-folder-pick').addEventListener('click', async () => {
+                if (window.showDirectoryPicker) {
+                    try {
+                        const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                        state.okSaveDirHandle = dirHandle;
+                        state.okSaveFolderName = dirHandle.name;
+                        document.getElementById('ok-folder-status').innerHTML =
+                            `<span style="color:#00e676">✅ ${dirHandle.name}</span><br>` +
+                            `<span style="font-size:0.72rem;color:#7986cb;">OK 판정 이미지가 이 폴더에 자동 저장됩니다.</span>`;
+                    } catch (err) {
+                        if (err.name !== 'AbortError') console.error('폴더 선택 오류:', err);
+                    }
+                } else {
+                    document.getElementById('ok-folder-file-input').click();
+                }
+            });
+
+            document.getElementById('ok-folder-file-input').addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length > 0) {
+                    const folderPath = files[0].webkitRelativePath.split('/')[0];
+                    state.okSaveFolderName = folderPath;
+                    document.getElementById('ok-folder-status').innerHTML =
+                        `<span style="color:#ffeb3b">📁 ${folderPath}</span><br>` +
+                        `<span style="font-size:0.72rem;color:#888;">※ 이 브라우저는 직접 저장을 지원하지 않아 다운로드 폴더에 저장됩니다.</span>`;
+                }
+                e.target.value = '';
+            });
+
+            document.getElementById('btn-modal-save').addEventListener('click', saveMasterImageFile);
+            document.getElementById('btn-modal-cancel').addEventListener('click', closeSaveMasterModal);
+            document.getElementById('master-save-filename').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') saveMasterImageFile();
+                if (e.key === 'Escape') closeSaveMasterModal();
+            });
+
+            // [수정] OK 바코드 모달 확인(확인 및 시작) → 다음 검사 시작
+            document.getElementById('btn-ok-barcode-save').addEventListener('click', async () => {
+                if (!document.getElementById('ok-barcode-modal').classList.contains('show')) return; 
+                
+                document.getElementById('ok-barcode-modal').classList.remove('show');
+                const serial = document.getElementById('ok-barcode-input').value.trim();
+                
+                // 상태 초기화 (검사 재개를 위해 리셋)
+                state.isFrozen = false;
+                state.stableFrames = 0;
+                state.continuousOkFrames = 0;
+                state.waitingForResult = false;
+                state.inspectionResultLogged = false;
+                state.currentResultIsOK = false;
+                lastInspectedSimilarity = -1;
+                lastIsOK = null;
+                inspectThrottle = 0;
+
+                // 다음 바코드 입력값으로 새로운 검사 자동 시작
+                if (serial) {
+                    document.getElementById('barcode-input').value = serial;
+                    const extracted = serial.length >= 5 ? serial.substring(4, 14) : '';
+                    document.getElementById('barcode-extracted').textContent = extracted || '-';
+                    processBarcodeInput(serial, extracted);
+                } else {
+                    if (state.isCameraOn && ((state.masterMats && state.masterMats.length > 0) || (state.masterMat && state.masterMat.cols > 0))) {
+                        state.trackingPoint.found = false;
+                        state.isInspecting = true;
+                        document.getElementById('btn-inspect-mode').innerText = "검사 중지";
+                        document.getElementById('btn-inspect-mode').style.background = "var(--ng-color)";
+                        document.getElementById('result-display').innerText = "SEARCHING...";
+                        document.getElementById('result-display').className = "result-box search";
+                    } else {
+                        state.isInspecting = false;
+                        document.getElementById('btn-inspect-mode').innerText = "검사 시작 (연속 모드)";
+                        document.getElementById('btn-inspect-mode').style.background = "var(--ok-color)";
+                        document.getElementById('result-display').innerText = "WAIT";
+                        document.getElementById('result-display').className = "result-box";
+                    }
+                }
+
+                setTimeout(() => document.getElementById('barcode-input').focus(), 100);
+            });
+
+            // [수정] 모달 닫기 버튼 → 검사 대기(중지) 상태로 변경
+            document.getElementById('btn-ok-barcode-cancel').addEventListener('click', () => {
+                document.getElementById('ok-barcode-modal').classList.remove('show');
+                
+                state.isFrozen = false;
+                state.stableFrames = 0;
+                state.continuousOkFrames = 0;
+                state.waitingForResult = false;
+                state.inspectionResultLogged = false;
+                state.currentResultIsOK = false;
+                lastInspectedSimilarity = -1;
+                lastIsOK = null;
+                inspectThrottle = 0;
+
+                state.isInspecting = false;
+                document.getElementById('btn-inspect-mode').innerText = "검사 시작 (연속 모드)";
+                document.getElementById('btn-inspect-mode').style.background = "var(--ok-color)";
+                document.getElementById('result-display').innerText = "WAIT";
+                document.getElementById('result-display').className = "result-box";
+
+                setTimeout(() => document.getElementById('barcode-input').focus(), 100);
+            });
+
+            let okBarcodeTimer = null;
+            document.getElementById('ok-barcode-input').addEventListener('input', (e) => {
+                clearTimeout(okBarcodeTimer);
+                if (e.target.value.trim().length > 0) {
+                    okBarcodeTimer = setTimeout(() => {
+                        document.getElementById('btn-ok-barcode-save').click();
+                    }, 300);
+                }
+            });
+
+            document.getElementById('ok-barcode-input').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    clearTimeout(okBarcodeTimer); 
+                    document.getElementById('btn-ok-barcode-save').click();
+                }
+                if (e.key === 'Escape') document.getElementById('btn-ok-barcode-cancel').click();
+            });
+
+            document.getElementById('btn-folder-pick').addEventListener('click', async () => {
+                if (window.showDirectoryPicker) {
+                    try {
+                        const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+                        state.masterSaveDirHandle = dirHandle; 
+                        state.selectedFolderName = dirHandle.name;
+                        
+                        document.getElementById('folder-status').innerHTML =
+                            `<span style="color:#7986cb">📁 ${dirHandle.name}</span><br>` +
+                            `<span style="color:#888">폴더의 이미지를 로드합니다...</span>`;
+
+                        let loaded = 0;
+                        for await (const entry of dirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.match(/\.(png|jpg|jpeg)$/i)) {
+                                const file = await entry.getFile();
+                                const keyName = file.name.replace(/\.[^/.]+$/, '');
+                                const reader = new FileReader();
+                                
+                                reader.onload = function(ev) {
+                                    const dataURL = ev.target.result;
+                                    const img = new Image();
+                                    img.onload = function() {
+                                        let existing = state.masterFileRegistry[keyName];
+                                        
+                                        let targetRoi;
+                                        if (existing && existing.savedRoi) {
+                                            targetRoi = { ...existing.savedRoi };
+                                        } else {
+                                            let camW = outCanvas.width || 640;
+                                            let camH = outCanvas.height || 480;
+                                            let drawW = Math.min(img.width, camW);
+                                            let drawH = Math.min(img.height, camH);
+                                            targetRoi = { 
+                                                x: Math.max(0, Math.round((camW - drawW) / 2)), 
+                                                y: Math.max(0, Math.round((camH - drawH) / 2)), 
+                                                w: drawW, 
+                                                h: drawH 
+                                            };
+                                        }
+                                        
+                                        let tCanvas = document.createElement('canvas');
+                                        tCanvas.width = targetRoi.w;
+                                        tCanvas.height = targetRoi.h;
+                                        tCanvas.getContext('2d').drawImage(img, 0, 0, targetRoi.w, targetRoi.h);
+                                        let dlArr = computeDLEmbedding(tCanvas);
+
+                                        state.masterFileRegistry[keyName] = {
+                                            dataURL: dataURL,
+                                            savedRoi: targetRoi,
+                                            roiMode: existing ? existing.roiMode : 'rect',
+                                            roiContours: existing ? existing.roiContours : []
+                                        };
+                                        loaded++;
+                                        updateFolderRegistryCount();
+                                        saveSettings();
+                                        document.getElementById('folder-status').innerHTML =
+                                            `<span style="color:#7986cb">📁 ${dirHandle.name}</span><br>` +
+                                            `<span style="color:#00e676">✅ ${loaded}개 양품 이미지 로드 완료</span>`;
+                                    };
+                                    img.src = dataURL;
+                                };
+                                reader.readAsDataURL(file);
+                            }
+                        }
+                    } catch (err) {
+                        if (err.name !== 'AbortError') console.error('폴더 선택 오류:', err);
+                    }
+                } else {
+                    document.getElementById('folder-file-input').click();
+                }
+            });
+
+            document.getElementById('folder-file-input').addEventListener('change', (e) => {
+                const files = Array.from(e.target.files);
+                if (!files.length) return;
+
+                const imageFiles = files.filter(f => f.type.startsWith('image/'));
+                if (!imageFiles.length) {
+                    document.getElementById('folder-status').textContent = '이미지 파일이 없습니다.';
+                    return;
+                }
+
+                const folderName = imageFiles[0].webkitRelativePath
+                    ? imageFiles[0].webkitRelativePath.split('/')[0]
+                    : '선택된 파일들';
+
+                state.selectedFolderName = folderName;
+                document.getElementById('folder-status').innerHTML =
+                    `<span style="color:#7986cb">📁 ${folderName}</span><br>` +
+                    `<span style="color:#888">${imageFiles.length}개 이미지 로드 중...</span>`;
+
+                let loaded = 0;
+                imageFiles.forEach(file => {
+                    const keyName = file.name.replace(/\.[^/.]+$/, '');
+                    const reader = new FileReader();
+                    reader.onload = function(ev) {
+                        const dataURL = ev.target.result;
+                        const img = new Image();
+                        img.onload = function() {
+                            let existing = state.masterFileRegistry[keyName];
+                            
+                            let targetRoi;
+                            if (existing && existing.savedRoi) {
+                                targetRoi = { ...existing.savedRoi };
+                            } else {
+                                let camW = outCanvas.width || 640;
+                                let camH = outCanvas.height || 480;
+                                let drawW = Math.min(img.width, camW);
+                                let drawH = Math.min(img.height, camH);
+                                targetRoi = { 
+                                    x: Math.max(0, Math.round((camW - drawW) / 2)), 
+                                    y: Math.max(0, Math.round((camH - drawH) / 2)), 
+                                    w: drawW, 
+                                    h: drawH 
+                                };
+                            }
+
+                            state.masterFileRegistry[keyName] = {
+                                dataURL: dataURL,
+                                savedRoi: targetRoi,
+                                roiMode: existing ? existing.roiMode : 'rect',
+                                roiContours: existing ? existing.roiContours : []
+                            };
+                            loaded++;
+                            if (loaded === imageFiles.length) {
+                                updateFolderRegistryCount();
+                                saveSettings();
+                                document.getElementById('folder-status').innerHTML =
+                                    `<span style="color:#7986cb">📁 ${folderName}</span><br>` +
+                                    `<span style="color:#00e676">✅ ${imageFiles.length}개 양품 이미지 등록 완료</span>`;
+                            }
+                        };
+                        img.src = dataURL;
+                    };
+                    reader.readAsDataURL(file);
+                });
+                e.target.value = '';
+            });
+
+            const barcodeInput = document.getElementById('barcode-input');
+            barcodeInput.addEventListener('input', () => {
+                const full = barcodeInput.value;
+                document.getElementById('barcode-fullval').textContent = '전체값: ' + (full || '-');
+
+                const extracted = full.length >= 5 ? full.substring(4, 14) : '';
+                document.getElementById('barcode-extracted').textContent = extracted || '-';
+
+                clearTimeout(state.barcodeDebounceTimer);
+                if (full.length > 0) {
+                    state.barcodeDebounceTimer = setTimeout(() => {
+                        processBarcodeInput(full, extracted);
+                    }, 300);
+                } else {
+                    document.getElementById('barcode-match-status').textContent = '대기중';
+                    document.getElementById('barcode-match-status').style.color = '#888';
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (document.getElementById('save-master-modal').classList.contains('show')) return;
+                if (document.getElementById('ok-barcode-modal').classList.contains('show')) return; 
+                if (state.isFrozen) return; 
+
+                const active = document.activeElement;
+                if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA')) return;
+                barcodeInput.focus();
+            });
+            
+            document.getElementById('master-upload').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if(file) {
+                    let wasInspecting = state.isInspecting;
+                    state.isInspecting = false; 
+
+                    const baseName = file.name.replace(/\.[^/.]+$/, '');
+                    
+                    if (state.masterMats) {
+                        state.masterMats.forEach(m => {
+                            if (m.mat) m.mat.delete();
+                            if (m.mask) m.mask.delete();
+                        });
+                        state.masterMats = [];
+                    }
+
+                    const reader = new FileReader();
+                    reader.onload = function(event) {
+                        const img = new Image();
+                        img.onload = function() {
+                            let camW = outCanvas.width || 640;
+                            let camH = outCanvas.height || 480;
+                            let drawW = Math.min(img.width, camW);
+                            let drawH = Math.min(img.height, camH);
+                            
+                            let existing = state.masterFileRegistry[baseName];
+                            let targetRoi;
+                            let currentMode = 'rect';
+                            let currentMask = null;
+                            let currentContours = [];
+
+                            if (existing && existing.savedRoi) {
+                                targetRoi = { ...existing.savedRoi };
+                                currentMode = existing.roiMode || 'rect';
+                                currentContours = existing.roiContours ? [...existing.roiContours] : [];
+                                
+                                if (currentMode === 'auto_contour' && currentContours.length > 0) {
+                                    try {
+                                        currentMask = cv.Mat.zeros(targetRoi.h, targetRoi.w, cv.CV_8UC1);
+                                        let pts = [];
+                                        for (let i = 0; i < currentContours.length; i++) {
+                                            pts.push(currentContours[i].x - targetRoi.x);
+                                            pts.push(currentContours[i].y - targetRoi.y);
+                                        }
+                                        let offsetCnt = cv.matFromArray(pts.length / 2, 1, cv.CV_32SC2, pts);
+                                        let mContours = new cv.MatVector();
+                                        mContours.push_back(offsetCnt);
+                                        cv.drawContours(currentMask, mContours, 0, new cv.Scalar(255), -1, cv.LINE_8, new cv.Mat(), 0);
+                                        offsetCnt.delete();
+                                        mContours.delete();
+                                    } catch (err) {
+                                        console.error("단일 파일 ROI 마스크 복원 에러:", err);
+                                    }
+                                }
+                            } else {
+                                targetRoi = { 
+                                    x: Math.max(0, Math.round((camW - drawW) / 2)), 
+                                    y: Math.max(0, Math.round((camH - drawH) / 2)), 
+                                    w: drawW, 
+                                    h: drawH 
+                                };
+                            }
+
+                            let tempCanvas = document.createElement('canvas');
+                            tempCanvas.width = targetRoi.w;
+                            tempCanvas.height = targetRoi.h;
+                            tempCanvas.getContext('2d').drawImage(img, 0, 0, targetRoi.w, targetRoi.h);
+                            
+                            let tempMat = cv.imread(tempCanvas);
+                            let newMat = new cv.Mat();
+                            cv.cvtColor(tempMat, newMat, cv.COLOR_RGBA2GRAY);
+                            cv.GaussianBlur(newMat, newMat, new cv.Size(5, 5), 0);
+                            
+                            document.getElementById('master-img-preview').src = tempCanvas.toDataURL();
+                            state.masterImageDataURL = tempCanvas.toDataURL('image/png');
+                            tempMat.delete();
+                            
+                            state.roi = targetRoi;
+                            state.roiMode = currentMode;
+                            state.roiContours = currentContours;
+                            
+                            if (state.roiMask) state.roiMask.delete();
+                            state.roiMask = currentMask;
+
+                            if (state.masterMat) state.masterMat.delete();
+                            state.masterMat = newMat; 
+                            
+                            let dlArr = computeDLEmbedding(tempCanvas);
+
+                            state.masterMats.push({ 
+                                mat: newMat.clone(), 
+                                mask: currentMask ? currentMask.clone() : null, 
+                                roiMode: currentMode, 
+                                roi: targetRoi, 
+                                roiContours: currentContours,
+                                dlEmbedding: dlArr 
+                            });
+                            
+                            if(wasInspecting) state.isInspecting = true;
+                            alert(`[${baseName}] 이미지가 양품 기준으로 설정되었습니다.`);
+                        }
+                        img.src = event.target.result;
+                    }
+                    reader.readAsDataURL(file);
+                }
+            });
+
+            document.getElementById('btn-inspect-mode').addEventListener('click', () => {
+                if((!state.masterMat || state.masterMat.cols === 0) && (!state.masterMats || state.masterMats.length === 0)) { 
+                    alert("먼저 기준 양품을 등록하세요!"); 
+                    return; 
+                }
+                toggleInspectMode();
+            });
+
+            document.getElementById('btn-export-csv').addEventListener('click', downloadXLSX);
+
+            outCanvas.addEventListener('mousedown', (e) => {
+                if(!state.isDrawingMode) return;
+                const rect = outCanvas.getBoundingClientRect();
+                const rawX = e.clientX - rect.left;
+                const rawY = e.clientY - rect.top;
+                state.dragStart = {
+                    x: Math.round(rawX * (outCanvas.width / rect.width)),
+                    y: Math.round(rawY * (outCanvas.height / rect.height))
+                };
+                state.isDrawingROI = true;
+            });
+
+            outCanvas.addEventListener('mousemove', (e) => {
+                if(!state.isDrawingROI) return;
+                const rect = outCanvas.getBoundingClientRect();
+                const rawX = e.clientX - rect.left;
+                const rawY = e.clientY - rect.top;
+                state.mouseX = Math.round(rawX * (outCanvas.width / rect.width));
+                state.mouseY = Math.round(rawY * (outCanvas.height / rect.height));
+            });
+
+            outCanvas.addEventListener('mouseup', (e) => {
+                if(!state.isDrawingROI) return;
+                const rect = outCanvas.getBoundingClientRect();
+                const rawX = e.clientX - rect.left;
+                const rawY = e.clientY - rect.top;
+                const pos = {
+                    x: Math.round(rawX * (outCanvas.width / rect.width)),
+                    y: Math.round(rawY * (outCanvas.height / rect.height))
+                };
+                
+                let tempRoi = {
+                    x: Math.min(state.dragStart.x, pos.x),
+                    y: Math.min(state.dragStart.y, pos.y),
+                    w: Math.max(1, Math.abs(pos.x - state.dragStart.x)),
+                    h: Math.max(1, Math.abs(pos.y - state.dragStart.y))
+                };
+                
+                state.isDrawingROI = false;
+                state.isDrawingMode = null;
+                outCanvas.style.cursor = 'default';
+
+                if (state.roiDrawingType === 'auto') {
+                    extractSmartContour(tempRoi);
+                } else {
+                    state.roi = tempRoi;
+                    state.roiMode = 'rect';
+                    if(state.roiMask) { state.roiMask.delete(); state.roiMask = null; }
+                }
+            });
+
+            document.getElementById('btn-draw-rect-roi').addEventListener('click', () => {
+                state.isDrawingMode = true;
+                state.roiDrawingType = 'rect';
+                outCanvas.style.cursor = 'crosshair';
+                alert("영상 위를 드래그하여 [사각형 검사 영역]을 지정하세요.");
+            });
+
+            document.getElementById('btn-draw-auto-roi').addEventListener('click', () => {
+                state.isDrawingMode = true;
+                state.roiDrawingType = 'auto';
+                outCanvas.style.cursor = 'crosshair';
+                alert("제품이 포함되도록 넉넉하게 드래그하세요. 내부 객체의 실제 윤곽선 모양대로 ROI가 자석처럼 달라붙습니다.");
+            });
+
+            document.getElementById('btn-reset-roi').addEventListener('click', () => {
+                state.roi = { x: 0, y: 0, w: outCanvas.width, h: outCanvas.height };
+                state.roiMode = 'rect';
+                if(state.roiMask) { state.roiMask.delete(); state.roiMask = null; }
+                state.roiContours = [];
+            });
+
+            document.getElementById('btn-save-settings').addEventListener('click', () => {
+                saveSettings();
+                alert("설정이 로컬에 저장되었습니다.");
+            });
+        }
+
+        function processBarcodeInput(full, extracted) {
+            const statusEl = document.getElementById('barcode-match-status');
+
+            if (!extracted) {
+                statusEl.textContent = '코드 길이 부족';
+                statusEl.style.color = '#ff9800';
+                return;
+            }
+
+            state.currentBarcodeFull = full;
+            state.currentBarcodeCode = extracted;
+            state.waitingForResult = true;
+            state.inspectionResultLogged = false;
+            state.currentResultIsOK = false;   
+            state.ignoreOkUntilRemoved = false; 
+
+            const matchedKeys = Object.keys(state.masterFileRegistry).filter(k => k === extracted || k.startsWith(extracted + '_') || k.startsWith(extracted + '-'));
+
+            if (matchedKeys.length > 0) {
+                statusEl.textContent = `✅ 매칭됨: ${extracted} (${matchedKeys.length}장)`;
+                statusEl.style.color = '#00e676';
+
+                if (state.masterMats) {
+                    state.masterMats.forEach(m => {
+                        if (m.mat) m.mat.delete();
+                        if (m.mask) m.mask.delete();
+                    });
+                }
+                state.masterMats = [];
+                let loadedCount = 0;
+
+                matchedKeys.forEach(key => {
+                    const entry = state.masterFileRegistry[key];
+                    const img = new Image();
+                    img.onload = function() {
+                        let currentRoi;
+                        let currentMode = entry.roiMode || 'rect';
+                        let currentContours = entry.roiContours ? [...entry.roiContours] : [];
+                        let currentMask = null;
+
+                        if (entry.savedRoi && entry.savedRoi.w > 0 && entry.savedRoi.h > 0) {
+                            currentRoi = { ...entry.savedRoi };
+
+                            if (currentMode === 'auto_contour' && currentContours.length > 0) {
+                                try {
+                                    currentMask = cv.Mat.zeros(currentRoi.h, currentRoi.w, cv.CV_8UC1);
+                                    let pts = [];
+                                    for (let i = 0; i < currentContours.length; i++) {
+                                        pts.push(currentContours[i].x - currentRoi.x);
+                                        pts.push(currentContours[i].y - currentRoi.y);
+                                    }
+                                    let offsetCnt = cv.matFromArray(pts.length / 2, 1, cv.CV_32SC2, pts);
+                                    let mContours = new cv.MatVector();
+                                    mContours.push_back(offsetCnt);
+                                    cv.drawContours(currentMask, mContours, 0, new cv.Scalar(255), -1, cv.LINE_8, new cv.Mat(), 0);
+                                    offsetCnt.delete();
+                                    mContours.delete();
+                                } catch (e) {
+                                    console.error("ROI 마스크 복원 에러:", e);
+                                }
+                            }
+
+                            const tc = document.createElement('canvas');
+                            tc.width  = currentRoi.w;
+                            tc.height = currentRoi.h;
+                            tc.getContext('2d').drawImage(img, 0, 0, currentRoi.w, currentRoi.h);
+
+                            let tMat = cv.imread(tc);
+                            let mMat = new cv.Mat();
+                            cv.cvtColor(tMat, mMat, cv.COLOR_RGBA2GRAY);
+                            cv.GaussianBlur(mMat, mMat, new cv.Size(5,5), 0);
+                            tMat.delete();
+                            
+                            let dlArr = computeDLEmbedding(tc);
+
+                            state.masterMats.push({ mat: mMat, mask: currentMask, roiMode: currentMode, roi: currentRoi, roiContours: currentContours, dlEmbedding: dlArr, masterObj: entry });
+                        } else {
+                            const camW = outCanvas.width  || 640;
+                            const camH = outCanvas.height || 480;
+                            currentRoi = { 
+                                x: Math.max(0, Math.round((camW - img.width) / 2)), 
+                                y: Math.max(0, Math.round((camH - img.height) / 2)), 
+                                w: img.width, 
+                                h: img.height 
+                            }; 
+
+                            const tc = document.createElement('canvas');
+                            tc.width  = img.width;
+                            tc.height = img.height;
+                            tc.getContext('2d').drawImage(img, 0, 0, img.width, img.height);
+
+                            let tMat = cv.imread(tc);
+                            let mMat = new cv.Mat();
+                            cv.cvtColor(tMat, mMat, cv.COLOR_RGBA2GRAY);
+                            cv.GaussianBlur(mMat, mMat, new cv.Size(5,5), 0);
+                            tMat.delete();
+                            
+                            let dlArr = computeDLEmbedding(tc);
+
+                            state.masterMats.push({ mat: mMat, mask: null, roiMode: 'rect', roi: currentRoi, roiContours: [], dlEmbedding: dlArr, masterObj: entry });
+                        }
+
+                        loadedCount++;
+                        if (loadedCount === matchedKeys.length) {
+                            document.getElementById('master-img-preview').src = state.masterFileRegistry[matchedKeys[0]].dataURL;
+                            state.masterImageDataURL = state.masterFileRegistry[matchedKeys[0]].dataURL;
+
+                            if (state.masterMat) state.masterMat.delete();
+                            state.masterMat = state.masterMats[0].mat.clone();
+                            state.roi = state.masterMats[0].roi;
+                            state.roiMode = state.masterMats[0].roiMode;
+                            if (state.roiMask) state.roiMask.delete();
+                            state.roiMask = state.masterMats[0].mask ? state.masterMats[0].mask.clone() : null;
+                            state.roiContours = state.masterMats[0].roiContours;
+
+                            if (state.isCameraOn && state.masterMat && state.masterMat.cols > 0) {
+                                lastInspectedSimilarity = -1;
+                                lastIsOK = null;
+                                inspectThrottle = 0;   // ← 스로틀 리셋
+                                state.trackingPoint.found = false;
+                                state.isInspecting = true;
+                                state.stableFrames = 0; 
+                                state.continuousOkFrames = 0; 
+                                state.isFrozen = false; 
+                                const btnInspect = document.getElementById('btn-inspect-mode');
+                                btnInspect.innerText = "검사 중지";
+                                btnInspect.style.background = "var(--ng-color)";
+                                document.getElementById('result-display').innerText = "SEARCHING...";
+                                document.getElementById('result-display').className = "result-box search";
+                            }
+                        }
+                    };
+                    img.src = entry.dataURL;
+                });
+
+            } else {
+                statusEl.textContent = '❌ 미등록: ' + extracted;
+                statusEl.style.color = '#f44336';
+
+                if (state.isCameraOn && state.masterMat && state.masterMat.cols > 0) {
+                    lastInspectedSimilarity = -1;
+                    lastIsOK = null;
+                    inspectThrottle = 0;   // ← 스로틀 리셋
+                    state.trackingPoint.found = false;
+                    state.isInspecting = true;
+                    state.stableFrames = 0; 
+                    state.continuousOkFrames = 0; 
+                    state.isFrozen = false; 
+                    const btnInspect = document.getElementById('btn-inspect-mode');
+                    btnInspect.innerText = "검사 중지";
+                    btnInspect.style.background = "var(--ng-color)";
+                    document.getElementById('result-display').innerText = "SEARCHING...";
+                    document.getElementById('result-display').className = "result-box search";
+                }
+            }
+
+            setTimeout(() => {
+                document.getElementById('barcode-input').value = '';
+                document.getElementById('barcode-fullval').textContent = '전체값: -';
+                document.getElementById('barcode-extracted').textContent = '-';
+            }, 1500);
+        }
+
+        // --- 10. 자석 윤곽선 추출 (Auto Contour ROI) ---
+        function extractSmartContour(rect) {
+            let wasInspecting = state.isInspecting;
+            state.isInspecting = false; 
+            state.isFrozen = false; 
+
+            if (state.masterMats) {
+                state.masterMats.forEach(m => {
+                    if (m.mat) m.mat.delete();
+                    if (m.mask) m.mask.delete();
+                });
+                state.masterMats = [];
+            }
+
+            let rx = Math.max(0, Math.round(rect.x));
+            let ry = Math.max(0, Math.round(rect.y));
+            if (rx >= outCanvas.width || ry >= outCanvas.height) {
+                alert("ROI 지정 영역이 카메라 화면을 벗어났습니다. 다시 드래그해주세요.");
+                if(wasInspecting) state.isInspecting = true;
+                return;
+            }
+            let rw = Math.max(1, Math.min(Math.round(rect.w), outCanvas.width - rx));
+            let rh = Math.max(1, Math.min(Math.round(rect.h), outCanvas.height - ry));
+
+            let cleanCanvas = document.createElement('canvas');
+            cleanCanvas.width = outCanvas.width;
+            cleanCanvas.height = outCanvas.height;
+            let cleanCtx = cleanCanvas.getContext('2d');
+            
+            cleanCtx.save();
+            cleanCtx.translate(cleanCanvas.width / 2, cleanCanvas.height / 2);
+            if (document.getElementById('chk-flip-h').checked) {
+                cleanCtx.scale(-1, 1);
+            }
+            cleanCtx.rotate(state.cameraAngle * Math.PI / 180);
+            cleanCtx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2, video.videoWidth, video.videoHeight);
+            cleanCtx.restore();
+            
+            let src = cv.imread(cleanCanvas);
+            let roiMat = src.roi(new cv.Rect(rx, ry, rw, rh));
+
+            let gray = new cv.Mat();
+            cv.cvtColor(roiMat, gray, cv.COLOR_RGBA2GRAY);
+            cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+
+            let edges = new cv.Mat();
+            cv.Canny(gray, edges, 50, 150, 3, false);
+            
+            let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+            cv.dilate(edges, edges, M, new cv.Point(-1, -1), 2);
+            cv.erode(edges, edges, M, new cv.Point(-1, -1), 2);
+
+            let contours = new cv.MatVector();
+            let hierarchy = new cv.Mat();
+            cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+            let maxArea = -1;
+            let maxCntIdx = -1;
+            for (let i = 0; i < contours.size(); ++i) {
+                let area = cv.contourArea(contours.get(i));
+                if (area > maxArea) {
+                    maxArea = area;
+                    maxCntIdx = i;
+                }
+            }
+
+            if (maxCntIdx !== -1 && maxArea > 50) {
+                let cnt = contours.get(maxCntIdx);
+                let bRect = cv.boundingRect(cnt);
+                
+                let finalRoi = {
+                    x: rx + bRect.x,
+                    y: ry + bRect.y,
+                    w: bRect.width,
+                    h: bRect.height
+                };
+                
+                let points = [];
+                let cntData = cnt.data32S;
+                for(let j=0; j<cntData.length; j+=2) {
+                    points.push({ x: rx + cntData[j], y: ry + cntData[j+1] });
+                }
+                
+                let mask = cv.Mat.zeros(finalRoi.h, finalRoi.w, cv.CV_8UC1);
+                
+                let offsetCnt = cnt.clone(); 
+                
+                let offsetX = rx - finalRoi.x;
+                let offsetY = ry - finalRoi.y;
+                for(let k=0; k<offsetCnt.rows; k++){
+                     offsetCnt.data32S[k*2] += offsetX;
+                     offsetCnt.data32S[k*2+1] += offsetY;
+                }
+                
+                let mContours = new cv.MatVector();
+                mContours.push_back(offsetCnt);
+                
+                cv.drawContours(mask, mContours, 0, new cv.Scalar(255), -1, cv.LINE_8, hierarchy, 0);
+
+                if(state.roiMask) state.roiMask.delete();
+                state.roiMask = mask;
+                state.roiContours = points;
+                state.roi = finalRoi;
+                state.roiMode = 'auto_contour';
+                
+                offsetCnt.delete(); mContours.delete();
+            } else {
+                alert("선택 영역 내에서 뚜렷한 외곽선을 찾지 못했습니다. 일반 사각형 ROI로 설정됩니다.");
+                state.roi = { x: rx, y: ry, w: rw, h: rh };
+                state.roiMode = 'rect';
+                if(state.roiMask) { state.roiMask.delete(); state.roiMask = null; }
+            }
+
+            src.delete(); roiMat.delete(); gray.delete(); edges.delete(); M.delete();
+            contours.delete(); hierarchy.delete();
+            
+            if(wasInspecting) state.isInspecting = true; 
+        }
+
+    </script>
+</body>
+</html>
